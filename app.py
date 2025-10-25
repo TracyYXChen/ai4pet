@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import re
 import yaml
+import time
 from typing import List, Dict, Any
 from openai import OpenAI
 import google.generativeai as genai
@@ -13,6 +14,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# App title at the very top
+st.title("LLM responses tracking for pet toys🐾 ")
 
 # Load toy data
 @st.cache_data
@@ -122,11 +126,13 @@ def extract_brands_products_gemini(text: str, api_key: str, model: str) -> List[
             st.error(f"Error extracting brands with Gemini: {error_msg}")
             return []
 
-def generate_response_with_openai(question: str, references: List[Dict], model: str, api_key: str = None) -> str:
-    """Generate response using OpenAI API"""
+def generate_response_with_openai_stream(question: str, references: List[Dict], model: str, api_key: str = None, container=None):
+    """Generate streaming response using OpenAI API"""
     try:
         if not api_key:
-            return "OpenAI API key not provided"
+            if container:
+                container.error("OpenAI API key not provided")
+            return
         
         client = OpenAI(api_key=api_key)
         
@@ -144,19 +150,34 @@ def generate_response_with_openai(question: str, references: List[Dict], model: 
         Please provide a detailed response with specific toy recommendations, safety considerations, and practical advice.
         """
         
-        response = client.chat.completions.create(
+        stream = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You are a knowledgeable pet care expert specializing in pet toys and enrichment."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=1000,
-            temperature=0.7
+            temperature=0.7,
+            stream=True
         )
         
-        return response.choices[0].message.content
+        response_text = ""
+        if container:
+            response_placeholder = container.empty()
+        
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                response_text += chunk.choices[0].delta.content
+                if container:
+                    response_placeholder.markdown(response_text)
+        
+        return response_text
+        
     except Exception as e:
-        return f"Error generating response with OpenAI: {str(e)}"
+        error_msg = f"Error generating response with OpenAI: {str(e)}"
+        if container:
+            container.error(error_msg)
+        return error_msg
 
 def generate_response_with_gemini(question: str, references: List[Dict], model: str) -> str:
     """Generate response using Google Gemini API"""
@@ -187,8 +208,6 @@ def generate_response_with_gemini(question: str, references: List[Dict], model: 
             return f"Error generating response with Gemini: {error_msg}"
 
 def main():
-    st.title("LLM responses tracking for pet toys🐾 ")
-    
     # Load data and config
     toy_data = load_toy_data()
     config = load_config()
@@ -249,8 +268,8 @@ def main():
     with col2:
         selected_models = st.multiselect(
             "Choose AI models:",
-            options=["GPT-4", "Gemini Pro"],
-            default=["GPT-4", "Gemini Pro"]
+            options=["GPT-4", "Gemini"],
+            default=["GPT-4", "Gemini"]
         )
     
     with col3:
@@ -289,7 +308,6 @@ def main():
         **References:**
         <style>
         .references-container p {
-            margin: 0.2em 0 !important;
             line-height: 1.2 !important;
         }
         .references-container {
@@ -302,14 +320,16 @@ def main():
         """, unsafe_allow_html=True)
         
         with st.container():
-            st.markdown('<div class="references-container">', unsafe_allow_html=True)
+            # Build all references in a single markdown string
+            references_text = ""
             for i, ref in enumerate(selected_question_data['references'], 1):
-                st.markdown(f"{i}. **{ref['title']}** - [{ref['link']}]({ref['link']})")
-            st.markdown('</div>', unsafe_allow_html=True)
+                references_text += f"{i}. {ref['title']} - [{ref['link']}]({ref['link']})\n"
+            
+            st.markdown(references_text)
         
         # Generate responses section
         
-        # Add blue button styling
+        # Add styling for blue button
         st.markdown("""
         <style>
         .stButton > button {
@@ -340,57 +360,117 @@ def main():
         else:
             # Generate button
             if st.button("Generate AI Responses", type="secondary"):
-                with st.spinner("Generating responses..."):
-                    responses = {}
-                    
-                    # Generate responses for selected models
-                    for model in selected_models:
-                        if model in ["GPT-3.5", "GPT-4"] and has_openai_key:
-                            model_name = openai_response_model
-                            response = generate_response_with_openai(
-                                selected_question_data['question'],
-                                selected_question_data['references'],
-                                model_name,
-                                openai_key
-                            )
-                            responses[model] = response
+                # Calculate total number of API calls (2 per model: response + extraction)
+                total_calls = len(selected_models) * 2
+                current_call = 0
+                
+                # Create progress bar right below the button
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # Track total time
+                total_start_time = time.time()
+                
+                responses = {}
+                
+                # Create layout with scrollable sections
+                response_cols = st.columns(len(selected_models))
+                response_containers = {}
+                brand_containers = {}
+                
+                # Initialize containers for each model with scrollable sections
+                for idx, model in enumerate(selected_models):
+                    with response_cols[idx]:
+                        # Response section with fixed height scrollable container
+                        st.markdown(f"### 📝 {model} Response")
+                        with st.container(height=300):
+                            response_containers[model] = st.empty()
+                        
+                        # Brands section with fixed height scrollable container
+                        st.markdown(f"### 🏷️ Brands/Products ({model})")
+                        with st.container(height=200):
+                            brand_containers[model] = st.empty()
+                
+                # Generate responses sequentially (Streamlit doesn't support threading well)
+                responses = {}
+                
+                for model in selected_models:
+                    if model in ["GPT-3.5", "GPT-4"] and has_openai_key and openai_response_model:
+                        # Update progress for response generation
+                        current_call += 1
+                        progress_bar.progress(current_call / total_calls)
+                        status_text.text(f"🔄 Generating {model} response... ({current_call}/{total_calls})")
+                        
+                        start_time = time.time()
+                        response = generate_response_with_openai_stream(
+                            selected_question_data['question'],
+                            selected_question_data['references'],
+                            openai_response_model,
+                            openai_key,
+                            response_containers[model]
+                        )
+                        response_time = time.time() - start_time
+                        print(f"⏱️ {model} response generation took {response_time:.2f} seconds")
+                        status_text.text(f"✅ {model} response completed in {response_time:.1f}s ({current_call}/{total_calls})")
+                        responses[model] = response
                             
-                        elif model == "Gemini Pro" and has_gemini_key and gemini_response_model:
-                            response = generate_response_with_gemini(
-                                selected_question_data['question'],
-                                selected_question_data['references'],
-                                gemini_response_model
-                            )
-                            responses[model] = response
+                    elif model == "Gemini" and has_gemini_key and gemini_response_model:
+                        # Update progress for response generation
+                        current_call += 1
+                        progress_bar.progress(current_call / total_calls)
+                        status_text.text(f"🔄 Generating {model} response... ({current_call}/{total_calls})")
+                        
+                        start_time = time.time()
+                        response = generate_response_with_gemini(
+                            selected_question_data['question'],
+                            selected_question_data['references'],
+                            gemini_response_model
+                        )
+                        response_time = time.time() - start_time
+                        print(f"⏱️ {model} response generation took {response_time:.2f} seconds")
+                        status_text.text(f"✅ {model} response completed in {response_time:.1f}s ({current_call}/{total_calls})")
+                        responses[model] = response
+                        # Display Gemini response in its container
+                        response_containers[model].markdown(response)
                     
                     st.session_state.model_responses = responses
                 
-                # Display responses side by side
+                # Extract brands after responses are complete
                 if st.session_state.model_responses:
-                    # Create columns for side-by-side display
-                    response_cols = st.columns(len(st.session_state.model_responses))
+                    for model_name, response in st.session_state.model_responses.items():
+                        # Update progress for brand extraction
+                        current_call += 1
+                        progress_bar.progress(current_call / total_calls)
+                        status_text.text(f"🏷️ Extracting brands from {model_name}... ({current_call}/{total_calls})")
+                        
+                        # Extract brands/products using LLM
+                        extracted_items = []
+                        
+                        # Use the same API as the response model
+                        if model_name in ["GPT-4", "GPT-3.5"] and has_openai_key:
+                            start_time = time.time()
+                            extracted_items = extract_brands_products_openai(response, openai_key)
+                            extraction_time = time.time() - start_time
+                            print(f"⏱️ {model_name} brand extraction took {extraction_time:.2f} seconds")
+                            status_text.text(f"✅ {model_name} brands extracted in {extraction_time:.1f}s ({current_call}/{total_calls})")
+                        elif model_name == "Gemini" and has_gemini_key and gemini_extraction_model:
+                            start_time = time.time()
+                            extracted_items = extract_brands_products_gemini(response, gemini_key, gemini_extraction_model)
+                            extraction_time = time.time() - start_time
+                            print(f"⏱️ {model_name} brand extraction took {extraction_time:.2f} seconds")
+                            status_text.text(f"✅ {model_name} brands extracted in {extraction_time:.1f}s ({current_call}/{total_calls})")
+                        
+                        # Update brand container
+                        if extracted_items:
+                            brand_text = "\n".join([f"• {item}" for item in extracted_items])
+                            brand_containers[model_name].markdown(brand_text)
+                        else:
+                            brand_containers[model_name].info(f"No brands/products detected")
                     
-                    for idx, (model_name, response) in enumerate(st.session_state.model_responses.items()):
-                        with response_cols[idx]:
-                            st.subheader(f"{model_name} Response:")
-                            st.write(response)
-                            
-                            # Extract brands/products using LLM
-                            with st.spinner(f"Extracting brands/products from {model_name} response..."):
-                                extracted_items = []
-                                
-                                # Use the same API as the response model
-                                if model_name in ["GPT-4", "GPT-3.5"] and has_openai_key:
-                                    extracted_items = extract_brands_products_openai(response, openai_key)
-                                elif model_name == "Gemini Pro" and has_gemini_key and gemini_extraction_model:
-                                    extracted_items = extract_brands_products_gemini(response, gemini_key, gemini_extraction_model)
-                                
-                                if extracted_items:
-                                    st.subheader(f"Brands/Products ({model_name}):")
-                                    for item in extracted_items:
-                                        st.markdown(f"• {item}")
-                                else:
-                                    st.info(f"No brands/products detected")
+                    # Complete progress bar and show total time
+                    total_time = time.time() - total_start_time
+                    progress_bar.progress(1.0)
+                    status_text.text(f"🎉 All tasks completed in {total_time:.1f}s!")
                     
                     st.markdown("---")
                 

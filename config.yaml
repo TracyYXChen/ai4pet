@@ -7,8 +7,8 @@ models:
     response: "gpt-4o"
     extraction: "gpt-4o"
   gemini:
-    response: "gemini-2.5-pro"
-    extraction: "gemini-2.5-pro"
+    response: "gemini-2.5-flash"
+    extraction: "gemini-2.5-flash"
 
 # Instructions:
 # 1. Replace "your_openai_api_key_here" with your actual OpenAI API key
