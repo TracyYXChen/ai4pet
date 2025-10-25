@@ -1,0 +1,181 @@
+[
+    {
+      "id": 1,
+      "species": "cat",
+      "question": "What are the best toys to keep my indoor cat active and not bored?",
+      "references": [
+        {
+          "title": "Toys for a bored cat?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1gqry4c/toys_for_a_bored_cat/"
+        },
+        {
+          "title": "Toys for bored indoor cat",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1l79mnz/toys_for_bored_indoor_cat/"
+        },
+        {
+          "title": "What's the best kind of toy for an easily bored cat?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1je7bcn/whats_the_best_kind_of_toy_for_an_easily_bored_cat/"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "species": "cat",
+      "question": "What cat toys do most cats actually love and keep playing with?",
+      "references": [
+        {
+          "title": "What are some cat toys your cat(s) ACTUALLY play with?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1cv80pe/what_are_some_cat_toys_your_cats_actually_play/"
+        },
+        {
+          "title": "Show Me Your Cat’s Favorite Toys",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1j76350/show_me_your_cats_favorite_toys/"
+        },
+        {
+          "title": "Best cat toys out there?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1ixrx9l/best_cat_toys_out_there/"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "species": "cat",
+      "question": "Can you recommend durable toys for a cat that plays very roughly?",
+      "references": [
+        {
+          "title": "Recommendations for Cat Toys for a Rough Playing Cat?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1jx0auo/recommendations_for_cat_toys_for_a_rough_playing/"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "species": "cat",
+      "question": "What are some good interactive or automatic toys to keep my cat busy when I can't play with them?",
+      "references": [
+        {
+          "title": "Which is your favorite automatic toy to keep your cat entertained?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/x5qqnr/which_is_your_favorite_automatic_toy_to_keep_your/"
+        },
+        {
+          "title": "Cat toys for bored cat?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/14vmd28/cat_toys_for_bored_cat/"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "species": "cat",
+      "question": "Can you suggest puzzle feeders or food puzzle toys that keep my cat mentally stimulated?",
+      "references": [
+        {
+          "title": "Seeking cat puzzle/toy recommendations",
+          "link": "https://www.reddit.com/r/Catownerhacks/comments/1buxsxz/seeking_cat_puzzletoy_recommendations/"
+        },
+        {
+          "title": "Puzzle Feeders: Who? What? Why?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/lg8qn4/puzzle_feeders_who_what_why/"
+        },
+        {
+          "title": "Where can I find some good feeding puzzle things for my cat?",
+          "link": "https://www.reddit.com/r/CatAdvice/comments/1av4xep/where_can_i_find_some_good_feeding_puzzle_things/"
+        },
+        {
+          "title": "Challenging/stimulating toy recommendations for too-smart kitties?",
+          "link": "https://www.reddit.com/r/cats/comments/1at6gya/challengingstimulating_toy_recommendations_for/"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "species": "dog",
+      "question": "What durable dog toys actually last for heavy chewers who destroy everything?",
+      "references": [
+        {
+          "title": "Indestructible toys",
+          "link": "https://www.reddit.com/r/dogs/comments/1kwf4gy/indestructible_toys/"
+        },
+        {
+          "title": "Toys for dog who demolishes every single thing we buy him",
+          "link": "https://www.reddit.com/r/dogs/comments/1iosw8f/toys_for_dog_who_demolishes_every_single_thing_we/"
+        },
+        {
+          "title": "Best toys for dogs that can destroy any 'indestructible' toy?",
+          "link": "https://www.reddit.com/r/dogs/comments/zqstdy/best_toys_for_dogs_that_can_destroy_any/"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "species": "dog",
+      "question": "Which dog toys are safe for a dog that loves to rip things apart?",
+      "references": [
+        {
+          "title": "What are some safe toys dogs can rip apart",
+          "link": "https://www.reddit.com/r/dogs/comments/1eoj1wf/what_are_some_safe_toys_dogs_can_rip_apart/"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "species": "dog",
+      "question": "What chew toys are best for a teething puppy?",
+      "references": [
+        {
+          "title": "Y'all I need your best teething toys",
+          "link": "https://www.reddit.com/r/puppy101/comments/1dol8o0/yall_i_need_your_best_teething_toys/"
+        },
+        {
+          "title": "Best toys for a teething puppy.",
+          "link": "https://www.reddit.com/r/puppy101/comments/1gwwv2v/best_toys_for_a_teething_puppy/"
+        },
+        {
+          "title": "What chew toys best helped your pup when they were teething?",
+          "link": "https://www.reddit.com/r/puppy101/comments/ou0zta/what_chew_toys_best_helped_your_pup_when_they/"
+        },
+        {
+          "title": "Best toys for aggressive chewer with puppy teeth",
+          "link": "https://www.reddit.com/r/puppy101/comments/l64ivm/best_toys_for_aggressive_chewer_with_puppy_teeth/"
+        },
+        {
+          "title": "best chews for a teething puppy?",
+          "link": "https://www.reddit.com/r/puppy101/comments/1g3xet0/best_chews_for_a_teething_puppy/"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "species": "dog",
+      "question": "What are the safest chew toys for my puppy so I don't have to worry about choking or injury?",
+      "references": [
+        {
+          "title": "Safe Puppy Teething Toys",
+          "link": "https://www.reddit.com/r/puppy101/comments/1i3fzsa/safe_puppy_teething_toys/"
+        },
+        {
+          "title": "Best and safest chew toys?",
+          "link": "https://www.reddit.com/r/puppy101/comments/1io7827/best_and_safest_chew_toys/"
+        },
+        {
+          "title": "Seriously, what chews can I give my 10 week old puppy?",
+          "link": "https://www.reddit.com/r/puppy101/comments/1hdfo49/seriously_what_chews_can_i_give_my_10_week_old/"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "species": "dog",
+      "question": "Can you recommend toys or activities that keep my dog mentally engaged and calm when I'm busy?",
+      "references": [
+        {
+          "title": "What are some safe toys dogs can rip apart",
+          "link": "https://www.reddit.com/r/dogs/comments/1eoj1wf/what_are_some_safe_toys_dogs_can_rip_apart/"
+        },
+        {
+          "title": "Best toys for dogs that can destroy any 'indestructible' toy? (discussion often mentions enrichment alternatives like puzzle feeders / lick mats)",
+          "link": "https://www.reddit.com/r/dogs/comments/zqstdy/best_toys_for_dogs_that_can_destroy_any/"
+        }
+      ]
+    }
+  ]
+  

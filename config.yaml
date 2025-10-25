@@ -1,0 +1,16 @@
+api_keys:
+  openai: "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"
+  gemini: "AIzaSyDeJejCw6xX89SHxSXMHW5FjT9mzpf7UFk"
+
+models:
+  openai:
+    response: "gpt-4o"
+    extraction: "gpt-4o"
+  gemini:
+    response: "gemini-2.5-pro"
+    extraction: "gemini-2.5-pro"
+
+# Instructions:
+# 1. Replace "your_openai_api_key_here" with your actual OpenAI API key
+# 2. Replace "your_gemini_api_key_here" with your actual Gemini API key
+# 3. Keep this file secure and never commit it to version control
