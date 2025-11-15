@@ -55,8 +55,8 @@ if 'generated_images' not in st.session_state:
     st.session_state.generated_images = {}
 if 'current_prompt' not in st.session_state:
     st.session_state.current_prompt = ""
-if 'pet_info' not in st.session_state:
-    st.session_state.pet_info = None
+if 'pet_emotions' not in st.session_state:
+    st.session_state.pet_emotions = None
 if 'image_hash' not in st.session_state:
     st.session_state.image_hash = None
 
@@ -67,8 +67,8 @@ def encode_image_to_base64(image: Image.Image) -> str:
     img_str = base64.b64encode(buffered.getvalue()).decode()
     return img_str
 
-def detect_pets_in_image(image: Image.Image, api_key: str, model: str = "gpt-4o") -> Optional[Dict]:
-    """Detect and describe cats or dogs in the uploaded image using OpenAI Vision API"""
+def detect_pet_emotions_in_image(image: Image.Image, api_key: str, model: str = "gpt-4o") -> Optional[Dict]:
+    """Detect and analyze emotions of cats or dogs in the uploaded image using OpenAI Vision API"""
     try:
         if not api_key:
             return None
@@ -79,13 +79,15 @@ def detect_pets_in_image(image: Image.Image, api_key: str, model: str = "gpt-4o"
         img_base64 = encode_image_to_base64(image)
         
         prompt_text = """Analyze this image and check if it contains any cats or dogs. 
-If there are cats or dogs present, provide a detailed description of each one including:
+If there are cats or dogs present, analyze the emotional state and expression of each pet.
+
+For each pet, provide:
 - Species (cat or dog)
 - Breed (if identifiable)
-- Color/pattern of fur
-- Size/appearance
-- Any distinctive features
-- Position in the image
+- Primary emotion/expression (e.g., happy, sad, excited, calm, anxious, playful, curious, content, alert, relaxed, fearful, aggressive, friendly)
+- Emotional indicators (body language, facial expression, tail position, ear position, posture)
+- Overall mood description
+- Confidence level of emotion detection (high/medium/low)
 
 If no cats or dogs are present, respond with "NO_PETS".
 
@@ -96,7 +98,10 @@ Format your response as JSON with this structure:
     {
       "species": "cat" or "dog",
       "breed": "breed name or unknown",
-      "description": "detailed description of appearance and features"
+      "primary_emotion": "emotion name",
+      "emotional_indicators": "description of body language and expression",
+      "mood_description": "overall mood and emotional state",
+      "confidence": "high/medium/low"
     }
   ]
 }"""
@@ -125,16 +130,16 @@ Format your response as JSON with this structure:
         )
         
         result_text = response.choices[0].message.content
-        pet_info = json.loads(result_text)
+        pet_emotions = json.loads(result_text)
         
-        return pet_info if pet_info.get("has_pets", False) else None
+        return pet_emotions if pet_emotions.get("has_pets", False) else None
         
     except Exception as e:
-        st.error(f"Error detecting pets with OpenAI: {str(e)}")
+        st.error(f"Error detecting pet emotions with OpenAI: {str(e)}")
         return None
 
-def detect_pets_in_image_gemini(image: Image.Image, api_key: str, model: str = "gemini-2.0-flash-exp") -> Optional[Dict]:
-    """Detect and describe cats or dogs in the uploaded image using Gemini Vision API"""
+def detect_pet_emotions_in_image_gemini(image: Image.Image, api_key: str, model: str = "gemini-2.0-flash-exp") -> Optional[Dict]:
+    """Detect and analyze emotions of cats or dogs in the uploaded image using Gemini Vision API"""
     try:
         if not api_key:
             return None
@@ -143,13 +148,15 @@ def detect_pets_in_image_gemini(image: Image.Image, api_key: str, model: str = "
         genai_model = genai.GenerativeModel(model)
         
         prompt_text = """Analyze this image and check if it contains any cats or dogs. 
-If there are cats or dogs present, provide a detailed description of each one including:
+If there are cats or dogs present, analyze the emotional state and expression of each pet.
+
+For each pet, provide:
 - Species (cat or dog)
 - Breed (if identifiable)
-- Color/pattern of fur
-- Size/appearance
-- Any distinctive features
-- Position in the image
+- Primary emotion/expression (e.g., happy, sad, excited, calm, anxious, playful, curious, content, alert, relaxed, fearful, aggressive, friendly)
+- Emotional indicators (body language, facial expression, tail position, ear position, posture)
+- Overall mood description
+- Confidence level of emotion detection (high/medium/low)
 
 If no cats or dogs are present, respond with "NO_PETS".
 
@@ -160,7 +167,10 @@ Format your response as JSON with this structure:
     {
       "species": "cat" or "dog",
       "breed": "breed name or unknown",
-      "description": "detailed description of appearance and features"
+      "primary_emotion": "emotion name",
+      "emotional_indicators": "description of body language and expression",
+      "mood_description": "overall mood and emotional state",
+      "confidence": "high/medium/low"
     }
   ]
 }
@@ -176,9 +186,9 @@ Return ONLY valid JSON, no other text."""
         elif "```" in result_text:
             result_text = result_text.split("```")[1].split("```")[0].strip()
         
-        pet_info = json.loads(result_text)
+        pet_emotions = json.loads(result_text)
         
-        return pet_info if pet_info.get("has_pets", False) else None
+        return pet_emotions if pet_emotions.get("has_pets", False) else None
         
     except Exception as e:
         error_msg = str(e)
@@ -186,34 +196,40 @@ Return ONLY valid JSON, no other text."""
             st.warning("❌ Gemini API key is invalid.")
             return None
         else:
-            st.error(f"Error detecting pets with Gemini: {error_msg}")
+            st.error(f"Error detecting pet emotions with Gemini: {error_msg}")
             return None
 
-def enhance_prompt_with_pet_info(user_prompt: str, pet_info: Optional[Dict]) -> str:
-    """Enhance the user's prompt to preserve specific pets from the original image"""
-    if not pet_info or not pet_info.get("has_pets") or not pet_info.get("pets"):
+def enhance_prompt_with_pet_emotions(user_prompt: str, pet_emotions: Optional[Dict]) -> str:
+    """Enhance the user's prompt to preserve pet emotions from the original image"""
+    if not pet_emotions or not pet_emotions.get("has_pets") or not pet_emotions.get("pets"):
         return user_prompt
     
     enhanced_prompt = user_prompt
     
-    # Build pet preservation instructions
-    pet_descriptions = []
-    for pet in pet_info.get("pets", []):
+    # Build pet emotion preservation instructions
+    pet_emotion_descriptions = []
+    for pet in pet_emotions.get("pets", []):
         species = pet.get("species", "")
         breed = pet.get("breed", "unknown breed")
-        description = pet.get("description", "")
+        primary_emotion = pet.get("primary_emotion", "")
+        mood_description = pet.get("mood_description", "")
+        emotional_indicators = pet.get("emotional_indicators", "")
         
         pet_desc = f"a {species}"
         if breed and breed != "unknown":
             pet_desc += f" ({breed})"
-        if description:
-            pet_desc += f" with {description}"
+        if primary_emotion:
+            pet_desc += f" showing {primary_emotion} emotion"
+        if mood_description:
+            pet_desc += f" with {mood_description}"
+        if emotional_indicators:
+            pet_desc += f" ({emotional_indicators})"
         
-        pet_descriptions.append(pet_desc)
+        pet_emotion_descriptions.append(pet_desc)
     
-    if pet_descriptions:
-        pet_instruction = f"IMPORTANT: The generated image must include the exact same {', '.join(pet_descriptions)} from the original uploaded image. Do not create a different or new {pet_info['pets'][0].get('species', 'pet')}. Preserve the specific appearance, colors, and features of the original pet(s)."
-        enhanced_prompt = f"{user_prompt}\n\n{pet_instruction}"
+    if pet_emotion_descriptions:
+        emotion_instruction = f"IMPORTANT: The generated image must include {', '.join(pet_emotion_descriptions)} from the original uploaded image. Preserve the exact same emotional expression, body language, and mood as shown in the original image. The pet(s) should display the same emotional state."
+        enhanced_prompt = f"{user_prompt}\n\n{emotion_instruction}"
     
     return enhanced_prompt
 
@@ -313,41 +329,56 @@ def main():
             image_bytes = buffered.getvalue()
             image_hash = hashlib.md5(image_bytes).hexdigest()
             
-            # Reset pet info if this is a new image
+            # Reset pet emotions if this is a new image
             if st.session_state.image_hash != image_hash:
-                st.session_state.pet_info = None
+                st.session_state.pet_emotions = None
                 st.session_state.image_hash = image_hash
                 st.session_state.uploaded_image = image
             
             # Display image - CSS will constrain it to approximately 1/3 of screen width
             st.image(image, caption="Uploaded Image")
             
-            # Detect pets in the image
-            if st.session_state.pet_info is None:
-                with st.spinner("🔍 Detecting pets in image..."):
-                    pet_info = None
+            # Detect pet emotions in the image
+            if st.session_state.pet_emotions is None:
+                with st.spinner("🔍 Analyzing pet emotions in image..."):
+                    pet_emotions = None
                     if has_openai_key:
-                        pet_info = detect_pets_in_image(image, openai_key, openai_vision_model)
+                        pet_emotions = detect_pet_emotions_in_image(image, openai_key, openai_vision_model)
                     elif has_gemini_key:
-                        pet_info = detect_pets_in_image_gemini(image, gemini_key, gemini_vision_model)
+                        pet_emotions = detect_pet_emotions_in_image_gemini(image, gemini_key, gemini_vision_model)
                     
-                    st.session_state.pet_info = pet_info
+                    st.session_state.pet_emotions = pet_emotions
                     
-                    if pet_info and pet_info.get("has_pets"):
-                        st.success(f"✅ Detected {len(pet_info.get('pets', []))} pet(s) in the image!")
-                        for idx, pet in enumerate(pet_info.get('pets', []), 1):
-                            st.info(f"**Pet {idx}:** {pet.get('species', '').title()} - {pet.get('breed', 'Unknown breed')} - {pet.get('description', '')}")
+                    if pet_emotions and pet_emotions.get("has_pets"):
+                        st.success(f"✅ Detected {len(pet_emotions.get('pets', []))} pet(s) in the image!")
+                        for idx, pet in enumerate(pet_emotions.get('pets', []), 1):
+                            emotion = pet.get('primary_emotion', 'unknown')
+                            mood = pet.get('mood_description', '')
+                            st.info(f"**Pet {idx}:** {pet.get('species', '').title()} ({pet.get('breed', 'Unknown breed')}) - **{emotion}** - {mood}")
                     else:
                         st.info("ℹ️ No cats or dogs detected in the image.")
             
-            # Show detected pet info if available
-            if st.session_state.pet_info and st.session_state.pet_info.get("has_pets"):
-                st.markdown("### 🐾 Detected Pets")
-                for idx, pet in enumerate(st.session_state.pet_info.get('pets', []), 1):
-                    st.markdown(f"**{pet.get('species', '').title()} {idx}:** {pet.get('breed', 'Unknown breed')} - {pet.get('description', '')}")
+            # Show detected pet emotions if available
+            if st.session_state.pet_emotions and st.session_state.pet_emotions.get("has_pets"):
+                st.markdown("### 😸 Pet Emotions")
+                for idx, pet in enumerate(st.session_state.pet_emotions.get('pets', []), 1):
+                    species = pet.get('species', '').title()
+                    breed = pet.get('breed', 'Unknown breed')
+                    emotion = pet.get('primary_emotion', 'unknown')
+                    mood = pet.get('mood_description', '')
+                    indicators = pet.get('emotional_indicators', '')
+                    confidence = pet.get('confidence', 'unknown')
+                    
+                    st.markdown(f"**{species} {idx} ({breed}):**")
+                    st.markdown(f"- **Emotion:** {emotion}")
+                    st.markdown(f"- **Mood:** {mood}")
+                    if indicators:
+                        st.markdown(f"- **Indicators:** {indicators}")
+                    st.markdown(f"- **Confidence:** {confidence}")
+                    st.markdown("---")
                 
-                if st.button("Re-detect Pets"):
-                    st.session_state.pet_info = None
+                if st.button("Re-analyze Emotions"):
+                    st.session_state.pet_emotions = None
                     st.rerun()
     
     with col2:
@@ -382,12 +413,12 @@ def main():
             elif not prompt.strip():
                 st.warning("Please enter a prompt to guide the image generation.")
             else:
-                # Enhance prompt with pet information if pets were detected
-                final_prompt = enhance_prompt_with_pet_info(prompt, st.session_state.pet_info)
+                # Enhance prompt with pet emotions if pets were detected
+                final_prompt = enhance_prompt_with_pet_emotions(prompt, st.session_state.pet_emotions)
                 
                 # Show the enhanced prompt if it was modified
                 if final_prompt != prompt:
-                    with st.expander("View Enhanced Prompt (with pet preservation)"):
+                    with st.expander("View Enhanced Prompt (with pet emotion preservation)"):
                         st.text(final_prompt)
                 
                 # Generate images using the enhanced prompt
@@ -473,7 +504,7 @@ def main():
             metadata = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "prompt": st.session_state.current_prompt,
-                "pet_info": st.session_state.pet_info,
+                "pet_emotions": st.session_state.pet_emotions,
                 "generators_used": list(st.session_state.generated_images.keys())
             }
             
