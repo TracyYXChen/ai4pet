@@ -3,6 +3,8 @@ import os
 
 import streamlit as st
 from PIL import Image
+import pandas as pd
+import altair as alt
 
 
 INDEX2LABEL = {
@@ -88,6 +90,49 @@ def main():
         f"**Images:** {total}  |  **Evaluated:** {evaluated}  |  "
         f"**Accuracy:** {accuracy:.2%} ({correct}/{evaluated})"
     )
+
+    # Confusion matrix / heatmap
+    st.markdown("### Confusion Matrix (rows = ground truth, columns = prediction)")
+    all_labels = ["none", "alarmed", "angry", "calm", "pleased"]
+
+    # Initialize counts
+    matrix = {gt: {pred: 0 for pred in all_labels} for gt in all_labels}
+    for r in records:
+        gt = r["gt"]
+        pred = r["pred"]
+        if pred == "N/A":
+            continue
+        if gt not in all_labels:
+            continue
+        if pred not in all_labels:
+            continue
+        matrix[gt][pred] += 1
+
+    cm_df = pd.DataFrame(matrix).T  # rows = gt, cols = pred
+    cm_df = cm_df[all_labels]  # ensure column order
+
+    # Show as table
+    st.dataframe(cm_df.style.format(precision=0), use_container_width=True)
+
+    # Heatmap with Altair
+    cm_long = cm_df.reset_index().melt(
+        id_vars="index", var_name="prediction", value_name="count"
+    )
+    cm_long = cm_long.rename(columns={"index": "ground_truth"})
+
+    heatmap = (
+        alt.Chart(cm_long)
+        .mark_rect()
+        .encode(
+            x=alt.X("prediction:N", title="Prediction"),
+            y=alt.Y("ground_truth:N", title="Ground truth"),
+            color=alt.Color("count:Q", title="Count", scale=alt.Scale(scheme="blues")),
+            tooltip=["ground_truth", "prediction", "count"],
+        )
+        .properties(height=300)
+    )
+
+    st.altair_chart(heatmap, use_container_width=True)
 
     # Filter: all / only wrong / only correct
     filter_mode = st.radio(
