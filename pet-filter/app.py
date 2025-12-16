@@ -6,6 +6,79 @@ import io
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from PIL import Image
 
+from transformers import pipeline
+
+# 1. Load the AI Depth Model (Cached for speed)
+@st.cache_resource
+def load_depth_model():
+    # 'depth-anything' is excellent, but 'vincent-cl/monodepth2-visdrone-v2' 
+    # or the standard DPT are lighter. Let's use a standard robust one:
+    pipe = pipeline(task="depth-estimation", model="LiheYoung/depth-anything-small-hf")
+    return pipe
+
+# 2. The Geometric Perspective Warp (Approach 1: Keystone + Depth)
+def apply_cat_perspective_warp(image_rgb, depth_map, strength=1.0):
+    """
+    Simulates a low-angle 'Cat View' using Perspective Keystone + Depth Warping.
+    Fixed to remove streaks and correct the viewing angle.
+    """
+    h, w, _ = image_rgb.shape
+    
+    # --- STEP 1: KEYSTONE (The "Looking Up" shape) ---
+    # To look up, parallel vertical lines (trees) should converge at the top.
+    # To avoid black borders/streaks, we effectively "Zoom In" while we pinch.
+    
+    tilt = 0.4 * strength  # Pinch factor
+    
+    # Source: We take a TRAPEZOID from the center of the original image
+    # (Narrower at bottom, Wider at top). 
+    # When we stretch this to a square, the top gets squeezed (convergence)
+    # and the bottom gets stretched (wide angle near ground).
+    
+    # Coordinates of the trapezoid to crop FROM the original:
+    # Top: Full width
+    # Bottom: Narrower (we zoom in on the ground detail)
+    src_pts = np.float32([
+        [0, 0],             # Top Left
+        [w, 0],             # Top Right
+        [w * tilt, h],      # Bottom Left (moved in)
+        [w * (1-tilt), h]   # Bottom Right (moved in)
+    ])
+    
+    # Destination: The full screen square
+    dst_pts = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
+    
+    matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    keystone_image = cv2.warpPerspective(image_rgb, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
+    
+    # --- STEP 2: DEPTH DISPLACEMENT (The "Low Height" Parallax) ---
+    
+    # Resize depth to match image
+    depth = cv2.resize(np.array(depth_map), (w, h)).astype(np.float32)
+    depth = (depth - depth.min()) / (depth.max() - depth.min()) # Normalize 0..1
+    
+    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+    
+    # DIRECTION FIX: 
+    # We want to simulate looking UP from the ground.
+    # This means the image content should slide DOWN (sky comes down).
+    # So we SUBTRACT the shift.
+    shift_y = depth * (h * 0.1 * strength)
+    
+    map_y_new = (map_y - shift_y).astype(np.float32) # Minus means move down
+    map_x_new = map_x.astype(np.float32)
+    
+    final_image = cv2.remap(keystone_image, map_x_new, map_y_new, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    
+    # Final cleanup crop (just 1% to clean edge interpolation artifacts)
+    crop = int(h * 0.01)
+    final_image = final_image[crop:h-crop, crop:w-crop]
+    
+    # Resize back to original
+    final_image = cv2.resize(final_image, (w, h))
+    
+    return final_image
+
 st.set_page_config(page_title="Pet Vision Filters", layout="wide")
 st.title("🐾 Pet Vision Camera Filters (Approx.)")
 
@@ -207,6 +280,7 @@ if input_mode == "📷 Live Camera":
         media_stream_constraints={"video": True, "audio": False},
     )
     st.info("Tip: If video is black, check browser camera permission (Chrome works best).")
+
 else:  # Upload Image
     st.subheader("Upload an Image")
     uploaded_file = st.file_uploader(
@@ -216,35 +290,109 @@ else:  # Upload Image
     )
     
     if uploaded_file is not None:
-        # Load image
+        # Load image (PIL = RGB)
         pil_image = Image.open(uploaded_file).convert("RGB")
-        img_array = np.array(pil_image)
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        img_rgb = np.array(pil_image)
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         
-        # Apply filter (no motion detection for static images)
+        # Get current params
         params = st.session_state.get("vision_params", {})
-        filtered_bgr = apply_pet_filter_to_image(img_bgr, params)
-        filtered_rgb = cv2.cvtColor(filtered_bgr, cv2.COLOR_BGR2RGB)
+
+        # --- PROCESSING ---
         
-        # Display side by side
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Original Image**")
+        # 1. Biological Vision Simulation (Retinal only)
+        # Apply color/blur filter to original BGR image
+        bio_bgr = apply_pet_filter_to_image(img_bgr, params)
+        bio_rgb = cv2.cvtColor(bio_bgr, cv2.COLOR_BGR2RGB)
+
+        # Prepare for Geometric/Combined
+        # We need the depth model for Approach 1
+        with st.spinner("🤖 AI is analyzing depth and perspective..."):
+            try:
+                # Calculate Depth
+                depth_pipe = load_depth_model()
+                depth_result = depth_pipe(pil_image)
+                depth_map = depth_result["depth"]
+
+                # 2. Geometric Perspective (Physical Viewpoint)
+                # Warp the original RGB image (no color filter)
+                # Strength=0.8 means a strong lower-angle effect
+                geo_rgb = apply_cat_perspective_warp(img_rgb, depth_map, strength=0.8)
+
+                # 3. Complete Simulation (Combined)
+                # Take the warped image (geo_rgb) and apply the biological filter
+                geo_bgr = cv2.cvtColor(geo_rgb, cv2.COLOR_RGB2BGR)
+                combined_bgr = apply_pet_filter_to_image(geo_bgr, params)
+                combined_rgb = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
+
+            except Exception as e:
+                st.error(f"Error loading AI model: {e}")
+                st.stop()
+        
+        # --- DISPLAY RESULTS ---
+        st.write("### 1. The Main Comparison: Human vs. Cat")
+        st.caption("See the difference between your reality and the cat's full experience.")
+
+        # ROW 1: The Main Comparison (Original vs Complete)
+        top_col1, top_col2 = st.columns(2)
+        
+        with top_col1:
+            st.subheader("Human Reality")
             st.image(pil_image, use_container_width=True)
-        with col2:
-            mode_name = params.get("mode", "Cat")
-            st.markdown(f"**{mode_name} Vision Filter Applied**")
-            st.image(filtered_rgb, use_container_width=True)
-        
-        # Download button for filtered image
-        filtered_pil = Image.fromarray(filtered_rgb)
-        buf = io.BytesIO()
-        filtered_pil.save(buf, format="PNG")
-        st.download_button(
-            label="⬇️ Download Filtered Image",
-            data=buf.getvalue(),
-            file_name=f"pet_vision_filtered_{params.get('mode', 'cat').lower()}.png",
-            mime="image/png"
-        )
+            st.info("**Human Body + Human Eyes**\n\nStandard standing height (approx. 1.7m) with trichromatic (3-color) sharp vision.")
+
+        with top_col2:
+            st.subheader("Cat Reality")
+            st.image(combined_rgb, use_container_width=True)
+            st.success("**Cat Body + Cat Eyes**\n\nStanding height approx. 20cm. Objects loom over you, colors fade to blue/yellow, and detail blurs.")
+
+        st.write("---")
+        st.write("### 2. Why is it so different?")
+        st.write("We break down the transformation into two key factors: Biology and Physics.")
+
+        # ROW 2: The Breakdown (Bio vs Geo)
+        bot_col1, bot_col2 = st.columns(2)
+
+        with bot_col1:
+            st.markdown("#### Factor A: Biology (The Eyes)")
+            st.image(bio_rgb, use_container_width=True)
+            st.warning(
+                "**Retinal Processing Only**\n\n"
+                "Even if a cat stood as tall as a human, the world would look like this. "
+                "Cats are dichromatic (Red-Green colorblind) and have lower visual acuity (blurrier) "
+                "to prioritize motion detection over detail."
+            )
+            
+        with bot_col2:
+            st.markdown("#### Factor B: Physics (The Body)")
+            st.image(geo_rgb, use_container_width=True)
+            st.warning(
+                "**Physical Perspective Only**\n\n"
+                "If a human crawled on the floor, the world would look like this. "
+                "Notice the 'Keystone Effect': because you are looking UP, vertical lines (trees, legs) "
+                "converge inward, making them feel taller and more imposing."
+            )
+
+        # --- DOWNLOADS ---
+        st.write("---")
+        st.markdown("##### Download Results")
+        d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+
+        # Helper to create download buttons
+        def create_download(image_array):
+            pil_img = Image.fromarray(image_array)
+            buf = io.BytesIO()
+            pil_img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        with d_col1:
+             st.download_button("⬇️ Human (Orig)", create_download(img_rgb), "human_view.png", "image/png")
+        with d_col2:
+             st.download_button("⬇️ Factor A (Bio)", create_download(bio_rgb), "bio_view.png", "image/png")
+        with d_col3:
+             st.download_button("⬇️ Factor B (Geo)", create_download(geo_rgb), "geo_view.png", "image/png")
+        with d_col4:
+             st.download_button("⬇️ Cat (Complete)", create_download(combined_rgb), "cat_complete.png", "image/png")
+
     else:
-        st.info("👆 Upload an image above to see how it looks through pet eyes!")
+        st.info("👆 Upload an image above to see the 3-stage simulation!")
