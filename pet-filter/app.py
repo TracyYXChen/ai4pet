@@ -17,67 +17,93 @@ def load_depth_model():
     return pipe
 
 # 2. The Geometric Perspective Warp (Approach 1: Keystone + Depth)
-def apply_cat_perspective_warp(image_rgb, depth_map, strength=1.0):
-    """
-    Simulates a low-angle 'Cat View' using Perspective Keystone + Depth Warping.
-    Fixed to remove streaks and correct the viewing angle.
-    """
+def apply_pet_perspective_warp(image_rgb, depth_map, mode="Cat", strength=1.0):
     h, w, _ = image_rgb.shape
     
-    # --- STEP 1: KEYSTONE (The "Looking Up" shape) ---
-    # To look up, parallel vertical lines (trees) should converge at the top.
-    # To avoid black borders/streaks, we effectively "Zoom In" while we pinch.
+    # 1. FIELD OF VIEW (FOV) SQUEEZE
+    # Dogs have ~240°, Cats ~200°. We simulate this with Barrel Distortion.
+    # Higher K = More "Fish-eye" / Wider peripheral view
+    if mode == "Dog":
+        k1 = -0.15 * strength  # Stronger barrel distortion for 240°
+        zoom = 1.1             # Compensate for black borders
+    else:
+        k1 = -0.05 * strength  # Subtle barrel for 200°
+        zoom = 1.02
+
+    # Prepare the map for radial distortion
+    dist_coeff = np.array([k1, 0, 0, 0], dtype=np.float32)
+    cam_matrix = np.array([[w, 0, w/2], [0, h, h/2], [0, 0, 1]], dtype=np.float32)
     
-    tilt = 0.4 * strength  # Pinch factor
+    # Generate the map for the fish-eye effect
+    map_x, map_y = cv2.initUndistortRectifyMap(cam_matrix, dist_coeff, None, cam_matrix, (w, h), cv2.CV_32FC1)
     
-    # Source: We take a TRAPEZOID from the center of the original image
-    # (Narrower at bottom, Wider at top). 
-    # When we stretch this to a square, the top gets squeezed (convergence)
-    # and the bottom gets stretched (wide angle near ground).
-    
-    # Coordinates of the trapezoid to crop FROM the original:
-    # Top: Full width
-    # Bottom: Narrower (we zoom in on the ground detail)
+    # Apply the FOV squeeze
+    distorted_img = cv2.remap(image_rgb, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    # 2. KEYSTONE (The "Looking Up" shape)
+    tilt = 0.4 * strength
     src_pts = np.float32([
-        [0, 0],             # Top Left
-        [w, 0],             # Top Right
-        [w * tilt, h],      # Bottom Left (moved in)
-        [w * (1-tilt), h]   # Bottom Right (moved in)
+        [0, 0], [w, 0], 
+        [w * tilt, h], [w * (1-tilt), h]
     ])
-    
-    # Destination: The full screen square
     dst_pts = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
     
     matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
-    keystone_image = cv2.warpPerspective(image_rgb, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
+    keystone_image = cv2.warpPerspective(distorted_img, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
     
-    # --- STEP 2: DEPTH DISPLACEMENT (The "Low Height" Parallax) ---
-    
-    # Resize depth to match image
+    # 3. DEPTH DISPLACEMENT (Parallax)
     depth = cv2.resize(np.array(depth_map), (w, h)).astype(np.float32)
-    depth = (depth - depth.min()) / (depth.max() - depth.min()) # Normalize 0..1
+    depth = (depth - depth.min()) / (depth.max() - depth.min())
     
     map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
-    
-    # DIRECTION FIX: 
-    # We want to simulate looking UP from the ground.
-    # This means the image content should slide DOWN (sky comes down).
-    # So we SUBTRACT the shift.
     shift_y = depth * (h * 0.1 * strength)
     
-    map_y_new = (map_y - shift_y).astype(np.float32) # Minus means move down
+    map_y_new = (map_y - shift_y).astype(np.float32)
     map_x_new = map_x.astype(np.float32)
     
     final_image = cv2.remap(keystone_image, map_x_new, map_y_new, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     
-    # Final cleanup crop (just 1% to clean edge interpolation artifacts)
-    crop = int(h * 0.01)
-    final_image = final_image[crop:h-crop, crop:w-crop]
+    return cv2.resize(final_image, (w, h))
+
+# pet_inerest,a Spectral Residual approach—a standard computer vision technique to find "surprising" or "novel" parts of an image that grab attention.
+def analyze_pet_interest(img_bgr, mode="Cat"):
+    """
+    Analyzes visual interest using a robust fallback if cv2.saliency fails.
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     
-    # Resize back to original
-    final_image = cv2.resize(final_image, (w, h))
+    # Try to use the specialized module
+    if hasattr(cv2, 'saliency'):
+        try:
+            saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
+            success, saliency_map = saliency.computeSaliency(gray)
+            saliency_map = (saliency_map * 255).astype("uint8")
+        except:
+            # Fallback to manual saliency calculation
+            saliency_map = cv2.GaussianBlur(gray, (5, 5), 0)
+            saliency_map = cv2.absdiff(gray, saliency_map)
+    else:
+        # MANUAL SALIENCY: Detects high-contrast areas/edges
+        # This simulates interest based on visual complexity
+        grad_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
+        saliency_map = cv2.convertScaleAbs(cv2.addWeighted(cv2.absdiff(grad_x, 0), 0.5, cv2.absdiff(grad_y, 0), 0.5, 0))
+
+    # Apply Species-Specific Weighting
+    h, w = saliency_map.shape
+    y_indices, _ = np.indices((h, w))
     
-    return final_image
+    # Weighting logic (Cats look up, Dogs look down)
+    if mode == "Cat":
+        weight_mask = np.clip(1.3 - (y_indices / h), 0.5, 1.5)
+    else:
+        weight_mask = np.clip(0.5 + (y_indices / h), 0.5, 1.5)
+        
+    weighted_saliency = (saliency_map * weight_mask).astype(np.uint8)
+    heatmap = cv2.applyColorMap(weighted_saliency, cv2.COLORMAP_JET)
+    _, _, _, max_loc = cv2.minMaxLoc(weighted_saliency)
+    
+    return heatmap, max_loc
 
 st.set_page_config(page_title="Pet Vision Filters", layout="wide")
 st.title("🐾 Pet Vision Camera Filters (Approx.)")
@@ -90,7 +116,12 @@ with st.sidebar:
     blur_sigma = st.slider("Blur (acuity loss) sigma", 0.0, 6.0, 2.0, 0.1)
 
     # Color controls
-    desat = st.slider("Desaturation", 0.0, 0.8, 0.20, 0.01)
+    if mode == "Cat":
+        default_desat = 0.50  # Cats see very washed out colors
+    else:
+        default_desat = 0.20  # Dogs see slightly more saturation
+        
+    desat = st.slider("Desaturation", 0.0, 0.8, default_desat, 0.01)
 
     # Low-light + grain controls
     lowlight_strength = st.slider("Low-light lift strength", 0.0, 1.5, 0.8, 0.05)
@@ -125,28 +156,43 @@ def clamp01(x: np.ndarray) -> np.ndarray:
     return np.clip(x, 0.0, 1.0)
 
 def cat_color_transform(rgb: np.ndarray) -> np.ndarray:
-    # rgb: float32 0..1
+    """
+    Simulates Cat Vision (Protanopia-ish).
+    Scientifically accurate: Cats cannot see Red. 
+    Red objects appear dark (low luminance), not purple.
+    """
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    r2 = 0.15 * r + 0.35 * g + 0.50 * b
-    g2 = 0.10 * r + 0.80 * g + 0.10 * b
-    b2 = 0.05 * r + 0.25 * g + 0.70 * b
+    
+    # 1. Cats have very few cones for Red. Red light looks very dark.
+    # We mix Red heavily into Green to simulate 'Yellow' but darken it.
+    rg_mix = 0.1 * r + 0.9 * g 
+    
+    # 2. Output:
+    # Red & Green channels become the mix (Yellowish/Grey)
+    # Blue channel stays Blue
+    r2 = rg_mix
+    g2 = rg_mix
+    b2 = b
+
     return np.stack([r2, g2, b2], axis=-1)
 
 def dog_color_transform(rgb: np.ndarray, strength: float) -> np.ndarray:
     """
-    Approximate dog blue–yellow dichromacy.
-    Intuition:
-      - Reduce red/green opponency; push both toward a yellow-ish channel
-      - Keep blue more distinguishable
-    This is an artistic-but-useful approximation for a camera filter.
+    Simulates Dog Vision (Deuteranopia-ish).
+    Scientifically accurate: Dogs see Red and Green as the SAME color (Yellow).
+    Red objects are bright yellow, not dark.
     """
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
 
-    # Base dichromacy-ish mapping (fast linear mix)
-    # Reds/greens collapse into a "yellow" channel; blues remain more separate.
-    r_d = 0.10 * r + 0.70 * g + 0.20 * b
-    g_d = 0.05 * r + 0.80 * g + 0.15 * b
-    b_d = 0.02 * r + 0.20 * g + 0.78 * b
+    # 1. Dogs mix Red and Green equally to create 'Yellow'.
+    # Unlike cats, Red objects retain their brightness.
+    yellow_channel = 0.5 * r + 0.5 * g
+    
+    # 2. Dogs see: Yellow (R+G) and Blue.
+    r_d = yellow_channel
+    g_d = yellow_channel
+    b_d = b 
+    
     mapped = np.stack([r_d, g_d, b_d], axis=-1)
 
     # Blend with original to control strength
@@ -315,15 +361,29 @@ else:  # Upload Image
                 depth_map = depth_result["depth"]
 
                 # 2. Geometric Perspective (Physical Viewpoint)
-                # Warp the original RGB image (no color filter)
-                # Strength=0.8 means a strong lower-angle effect
-                geo_rgb = apply_cat_perspective_warp(img_rgb, depth_map, strength=0.8)
+                # NEW LOGIC: Determine height based on mode
+                if params["mode"] == "Cat":
+                    warp_strength = 0.8  # Short (Strong angle)
+                else:
+                    warp_strength = 0.5  # Tall (Mild angle)
+
+                # Updated function call (make sure you renamed the function definition too!)
+                geo_rgb = apply_pet_perspective_warp(img_rgb, depth_map, mode=params["mode"], strength=warp_strength)
 
                 # 3. Complete Simulation (Combined)
                 # Take the warped image (geo_rgb) and apply the biological filter
                 geo_bgr = cv2.cvtColor(geo_rgb, cv2.COLOR_RGB2BGR)
                 combined_bgr = apply_pet_filter_to_image(geo_bgr, params)
                 combined_rgb = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
+
+                # --- NEW: 4. Interest Analysis ---
+                interest_heatmap_bgr, peak_loc = analyze_pet_interest(combined_bgr, mode=params["mode"])
+                interest_heatmap_rgb = cv2.cvtColor(interest_heatmap_bgr, cv2.COLOR_BGR2RGB)
+
+                # Create an overlay (Heatmap on top of filtered image)
+                overlay_img = cv2.addWeighted(combined_rgb, 0.6, interest_heatmap_rgb, 0.4, 0)
+                # Draw a target circle on the peak interest point
+                cv2.circle(overlay_img, peak_loc, 20, (255, 255, 255), 3)
 
             except Exception as e:
                 st.error(f"Error loading AI model: {e}")
@@ -341,10 +401,17 @@ else:  # Upload Image
             st.image(pil_image, use_container_width=True)
             st.info("**Human Body + Human Eyes**\n\nStandard standing height (approx. 1.7m) with trichromatic (3-color) sharp vision.")
 
+        # Dynamic Text Variables
+        current_mode = params["mode"]
+        if current_mode == "Cat":
+            body_desc = "Standing height approx. 20cm. Objects loom over you significantly."
+        else:
+            body_desc = "Standing height approx. 50cm. The angle is lower than human, but higher than a cat."
+
         with top_col2:
-            st.subheader("Cat Reality")
+            st.subheader(f"{current_mode} Reality")
             st.image(combined_rgb, use_container_width=True)
-            st.success("**Cat Body + Cat Eyes**\n\nStanding height approx. 20cm. Objects loom over you, colors fade to blue/yellow, and detail blurs.")
+            st.success(f"**{current_mode} Body + {current_mode} Eyes**\n\n{body_desc}")
 
         st.write("---")
         st.write("### 2. Why is it so different?")
@@ -368,10 +435,31 @@ else:  # Upload Image
             st.image(geo_rgb, use_container_width=True)
             st.warning(
                 "**Physical Perspective Only**\n\n"
-                "If a human crawled on the floor, the world would look like this. "
-                "Notice the 'Keystone Effect': because you are looking UP, vertical lines (trees, legs) "
+                f"If a human crawled at {current_mode} height, the world would look like this. "
+                "Notice the 'Keystone Effect': because you are looking UP, vertical lines "
                 "converge inward, making them feel taller and more imposing."
             )
+        # ROW 3: Interest Analysis
+        st.write("---")
+        st.write("### 3. Visual Attention Analysis")
+        st.caption(f"Where is a {current_mode} most likely to look?")
+
+        col_int1, col_int2 = st.columns(2)
+
+        with col_int1:
+            st.image(overlay_img, use_container_width=True)
+            st.info("**Attention Heatmap**\n\nBright red zones indicate high visual 'weight' based on contrast, shape, and height.")
+
+        with col_int2:
+        # Crop a small square around the peak interest point
+            x, y = peak_loc
+        # Ensure crop stays within image bounds
+            x1, x2 = max(0, x-75), min(img_rgb.shape[1], x+75)
+            y1, y2 = max(0, y-75), min(img_rgb.shape[0], y+75)
+            crop = img_rgb[y1:y2, x1:x2]
+    
+            st.image(crop, caption="Primary Object of Interest (Human View)")
+            st.warning(f"**Analysis:** Based on {current_mode} biology, this object is the most likely to grab their attention first.")
 
         # --- DOWNLOADS ---
         st.write("---")
