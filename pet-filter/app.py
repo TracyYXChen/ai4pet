@@ -7,6 +7,16 @@ from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from PIL import Image
 
 from transformers import pipeline
+from rate_cat_attractiveness import (
+    rate_cat_attractiveness_with_yolo, 
+    CatEyeScores, 
+    DetectedObject,
+    CATEGORY_NAMES,
+)
+from ultralytics import YOLO
+from typing import Tuple, Dict, Any, Optional, List
+import tempfile
+import os
 
 # 1. Load the AI Depth Model (Cached for speed)
 @st.cache_resource
@@ -15,6 +25,154 @@ def load_depth_model():
     # or the standard DPT are lighter. Let's use a standard robust one:
     pipe = pipeline(task="depth-estimation", model="LiheYoung/depth-anything-small-hf")
     return pipe
+
+
+# 2. Load the Object Detection Model (Cached for speed)
+@st.cache_resource
+def load_detector_model(weights: str = "yolov8n.pt"):
+    """Load and cache the object detection model for cat attractiveness scoring."""
+    return YOLO(weights)
+
+
+# Category colors for bounding box visualization (BGR format for OpenCV)
+CATEGORY_COLORS = {
+    "vertical": (255, 165, 0),    # Orange
+    "shelter": (147, 112, 219),   # Purple
+    "cozy": (255, 192, 203),      # Pink
+    "exploration": (50, 205, 50), # Lime green
+    "threat": (0, 0, 255),        # Red
+    None: (128, 128, 128),        # Gray for uncategorized
+}
+
+
+def draw_detections_on_image(
+    img_rgb: np.ndarray,
+    detections: List[DetectedObject],
+) -> np.ndarray:
+    """
+    Draw bounding boxes with object names and category labels on the image.
+    
+    Args:
+        img_rgb: RGB image as numpy array
+        detections: List of DetectedObject with bbox and category info
+        
+    Returns:
+        RGB image with annotations drawn
+    """
+    annotated = img_rgb.copy()
+    
+    for det in detections:
+        x1, y1, x2, y2 = det.bbox
+        category = det.category
+        
+        # Get color for this category (convert BGR to RGB for display)
+        color_bgr = CATEGORY_COLORS.get(category, CATEGORY_COLORS[None])
+        color_rgb = (color_bgr[2], color_bgr[1], color_bgr[0])
+        
+        # Draw bounding box
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color_rgb, 2)
+        
+        # Prepare label text
+        if category:
+            category_display = CATEGORY_NAMES.get(category, category.title())
+            label = f"{det.class_name} [{category_display}]"
+        else:
+            label = det.class_name
+        
+        # Calculate text size for background
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+        (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+        
+        # Draw label background
+        label_y = max(y1 - 5, text_h + 5)
+        cv2.rectangle(
+            annotated, 
+            (x1, label_y - text_h - 5), 
+            (x1 + text_w + 4, label_y + 2), 
+            color_rgb, 
+            -1  # Filled
+        )
+        
+        # Draw text (white on colored background)
+        cv2.putText(
+            annotated, 
+            label, 
+            (x1 + 2, label_y - 2), 
+            font, 
+            font_scale, 
+            (255, 255, 255),  # White text
+            thickness,
+            cv2.LINE_AA
+        )
+    
+    return annotated
+
+
+def score_cat_attractiveness(
+    image_input: str | np.ndarray,
+    detector_model = None,
+    detector_weights: str = "yolov8n.pt",
+    conf: float = 0.25,
+    iou: float = 0.45,
+    return_debug: bool = False,
+) -> Tuple[CatEyeScores, Optional[Dict[str, Any]]]:
+    """
+    Score how attractive a space is to a cat.
+    
+    Args:
+        image_input: Either a file path (str) or a BGR numpy array
+        detector_model: Optional pre-loaded detection model (for efficiency)
+        detector_weights: Model weights file if model not provided
+        conf: Detection confidence threshold
+        iou: Detection IOU threshold
+        return_debug: Whether to return debug information
+        
+    Returns:
+        Tuple of (CatEyeScores, debug_dict or None)
+        
+        CatEyeScores contains:
+        - vertical_opportunity: Score for climbing/perching spots (0-1)
+        - shelter_hiding: Score for hiding spots and shelter (0-1)
+        - cozy_warmth: Score for warm, cozy areas (0-1)
+        - exploration_richness: Score for interesting objects to explore (0-1)
+        - safety_low_threat: Score for safety/low threat level (0-1)
+        - overall: Weighted overall attractiveness score (0-1)
+        
+        debug_dict (if return_debug=True) contains:
+        - detections: List[DetectedObject] with bounding boxes and categories
+        - counts: Dict of object counts
+        - Various other analysis metrics
+    """
+    # If input is a numpy array, save to temp file since the underlying function expects a path
+    if isinstance(image_input, np.ndarray):
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+            cv2.imwrite(tmp_path, image_input)
+        try:
+            scores, debug = rate_cat_attractiveness_with_yolo(
+                image_path=tmp_path,
+                yolo_model=detector_model,
+                yolo_weights=detector_weights,
+                conf=conf,
+                iou=iou,
+                return_debug=return_debug,
+            )
+        finally:
+            os.unlink(tmp_path)  # Clean up temp file
+    else:
+        # Input is a file path
+        scores, debug = rate_cat_attractiveness_with_yolo(
+            image_path=image_input,
+            yolo_model=detector_model,
+            yolo_weights=detector_weights,
+            conf=conf,
+            iou=iou,
+            return_debug=return_debug,
+        )
+    
+    return scores, debug
 
 # 2. The Geometric Perspective Warp (Approach 1: Keystone + Depth)
 def apply_pet_perspective_warp(image_rgb, depth_map, mode="Cat", strength=1.0):
@@ -460,6 +618,95 @@ else:  # Upload Image
     
             st.image(crop, caption="Primary Object of Interest (Human View)")
             st.warning(f"**Analysis:** Based on {current_mode} biology, this object is the most likely to grab their attention first.")
+
+        # ROW 4: Cat Attractiveness Scoring (only for Cat mode)
+        if current_mode == "Cat":
+            st.write("---")
+            st.write("### 4. 🐱 Cat Attractiveness Score")
+            st.caption("How appealing is this space to a cat? AI analyzes objects and visual features.")
+            
+            with st.spinner("🔍 Analyzing space attractiveness for cats..."):
+                try:
+                    detector_model = load_detector_model()
+                    cat_scores, debug_info = score_cat_attractiveness(
+                        img_bgr, 
+                        detector_model=detector_model,
+                        return_debug=True
+                    )
+                    
+                    # Display overall score prominently
+                    overall_pct = int(cat_scores.overall * 100)
+                    if overall_pct >= 70:
+                        score_color = "🟢"
+                        score_msg = "Excellent! A cat would love this space."
+                    elif overall_pct >= 50:
+                        score_color = "🟡"
+                        score_msg = "Good. This space has nice cat-friendly features."
+                    elif overall_pct >= 30:
+                        score_color = "🟠"
+                        score_msg = "Okay. Some improvements could make it more cat-friendly."
+                    else:
+                        score_color = "🔴"
+                        score_msg = "Low. This space may not be very appealing to cats."
+                    
+                    st.metric(
+                        label=f"{score_color} Overall Cat Attractiveness",
+                        value=f"{overall_pct}%",
+                        help=score_msg
+                    )
+                    st.caption(score_msg)
+                    
+                    # Display individual dimension scores
+                    score_cols = st.columns(5)
+                    
+                    dimensions = [
+                        ("🧗 Vertical", cat_scores.vertical_opportunity, "Climbing & perching opportunities"),
+                        ("🏠 Shelter", cat_scores.shelter_hiding, "Hiding spots & enclosed spaces"),
+                        ("☀️ Cozy", cat_scores.cozy_warmth, "Warm & comfortable areas"),
+                        ("🎯 Explore", cat_scores.exploration_richness, "Interesting objects to investigate"),
+                        ("🛡️ Safety", cat_scores.safety_low_threat, "Low threat level & security"),
+                    ]
+                    
+                    for col, (label, score, tooltip) in zip(score_cols, dimensions):
+                        with col:
+                            pct = int(score * 100)
+                            st.metric(label=label, value=f"{pct}%", help=tooltip)
+                    
+                    # Show annotated image with bounding boxes and detected objects
+                    detections = debug_info.get("detections", []) if debug_info else []
+                    
+                    if detections:
+                        st.write("#### Detected Objects")
+                        
+                        # Draw bounding boxes on original image
+                        annotated_img = draw_detections_on_image(img_rgb, detections)
+                        st.image(annotated_img, use_container_width=True)
+                        
+                        # Legend for categories
+                        st.caption("**Category Legend:** 🧗 Vertical (Orange) | 🏠 Shelter (Purple) | ☀️ Cozy (Pink) | 🎯 Explore (Green) | ⚠️ Threat (Red) | Uncategorized (Gray)")
+                        
+                        # Show object summary in expander
+                        with st.expander("🔎 Detection Details"):
+                            # Group by category
+                            by_category: Dict[str, List[str]] = {}
+                            for det in detections:
+                                cat_key = det.category or "uncategorized"
+                                if cat_key not in by_category:
+                                    by_category[cat_key] = []
+                                by_category[cat_key].append(det.class_name)
+                            
+                            for cat_key, objects in by_category.items():
+                                cat_display = CATEGORY_NAMES.get(cat_key, cat_key.title())
+                                obj_counts = {}
+                                for obj in objects:
+                                    obj_counts[obj] = obj_counts.get(obj, 0) + 1
+                                obj_str = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                                st.write(f"**{cat_display}:** {obj_str}")
+                    else:
+                        st.info("No objects detected in this image.")
+                                
+                except Exception as e:
+                    st.error(f"Error analyzing cat attractiveness: {e}")
 
         # --- DOWNLOADS ---
         st.write("---")
