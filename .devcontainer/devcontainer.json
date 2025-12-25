@@ -17,7 +17,7 @@
       ]
     }
   },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
+  "updateContentCommand": "sudo apt update && sudo apt upgrade -y; [ -f packages.txt ] && sudo xargs apt install -y < packages.txt; pip3 install --user uv streamlit; cd pet-filter && uv sync; echo '✅ Packages installed and Dependencies synced'",
   "postAttachCommand": {
     "server": "streamlit run pet-filter/app.py --server.enableCORS false --server.enableXsrfProtection false"
   },
