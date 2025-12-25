@@ -13,6 +13,7 @@ dependencies = [
     "transformers",
     "torch",
     "ultralytics>=8.3.241",
+    "libigl>=2.6.1",
 ]
 
 [dependency-groups]

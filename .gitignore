@@ -1,6 +1,6 @@
 evaluation/domestic-cats/
 # API Keys and sensitive configuration
-# config.yaml
+config.yaml
 
 # Python
 __pycache__/
