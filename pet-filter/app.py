@@ -1,9 +1,7 @@
 import streamlit as st
 import numpy as np
 import cv2
-import av
 import io
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from PIL import Image
 
 from transformers import pipeline
@@ -356,75 +354,6 @@ def dog_color_transform(rgb: np.ndarray, strength: float) -> np.ndarray:
     # Blend with original to control strength
     return clamp01((1.0 - strength) * rgb + strength * mapped)
 
-class PetVisionTransformer(VideoTransformerBase):
-    def __init__(self):
-        self.prev_gray = None
-
-    def transform(self, frame: av.VideoFrame) -> av.VideoFrame:
-        params = st.session_state.get("vision_params", {})
-        if not params:
-            params = dict(
-                mode="Cat",
-                blur_sigma=2.0,
-                desat=0.2,
-                lowlight_strength=0.8,
-                noise_base=0.02,
-                noise_extra=0.06,
-                enable_motion=True,
-                motion_gain=5.0,
-                motion_boost=0.05,
-                dog_strength=0.85,
-            )
-
-        img_bgr = frame.to_ndarray(format="bgr24")
-        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-
-        # 1) Color model
-        if params["mode"] == "Cat":
-            rgb2 = cat_color_transform(rgb)
-        else:
-            rgb2 = dog_color_transform(rgb, float(params["dog_strength"]))
-
-        # Luma (for desat + low-light adaptation)
-        luma = 0.2126 * rgb2[..., 0] + 0.7152 * rgb2[..., 1] + 0.0722 * rgb2[..., 2]
-
-        # 2) Desaturation
-        d = float(params["desat"])
-        rgb2 = rgb2 * (1.0 - d) + luma[..., None] * d
-
-        # 3) Reduced acuity blur
-        sigma = float(params["blur_sigma"])
-        if sigma > 0.0:
-            rgb2 = cv2.GaussianBlur(rgb2, (0, 0), sigmaX=sigma, sigmaY=sigma)
-
-        # 4) Low-light lift + adaptive noise
-        avg_luma = float(luma.mean())
-        lift = np.clip((0.55 - avg_luma) / 0.55, 0.0, 1.0) * float(params["lowlight_strength"])
-        gamma = 1.0 - 0.35 * lift
-        rgb2 = np.power(clamp01(rgb2), gamma)
-
-        noise_amt = float(params["noise_base"]) + float(params["noise_extra"]) * lift
-        if noise_amt > 0.0:
-            noise = (np.random.rand(*luma.shape).astype(np.float32) - 0.5) * noise_amt
-            rgb2 = clamp01(rgb2 + noise[..., None])
-
-        # 5) Optional motion emphasis
-        gray = (0.299 * rgb2[..., 0] + 0.587 * rgb2[..., 1] + 0.114 * rgb2[..., 2]).astype(np.float32)
-        if params["enable_motion"] and self.prev_gray is not None:
-            diff = np.abs(gray - self.prev_gray)
-            diff = np.clip(diff * float(params["motion_gain"]), 0, 1)
-            rgb2 = clamp01(rgb2 + diff[..., None] * float(params["motion_boost"]))
-        self.prev_gray = gray
-
-        out_rgb = (rgb2 * 255).astype(np.uint8)
-        out_bgr = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
-        
-        # Convert filtered numpy array back to VideoFrame
-        new_frame = av.VideoFrame.from_ndarray(out_bgr, format="bgr24")
-        new_frame.pts = frame.pts
-        new_frame.time_base = frame.time_base
-        return new_frame
-
 def apply_pet_filter_to_image(img_bgr: np.ndarray, params: dict) -> np.ndarray:
     """
     Apply pet vision filter to a static image (no motion detection).
@@ -467,267 +396,248 @@ def apply_pet_filter_to_image(img_bgr: np.ndarray, params: dict) -> np.ndarray:
     out_bgr = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
     return out_bgr
 
-# Input mode selection
-st.subheader("Choose Input Mode")
-input_mode = st.radio(
-    "Select how you want to provide the image:",
-    options=["📷 Live Camera", "🖼️ Upload Image"],
-    horizontal=True,
-    label_visibility="collapsed"
+st.subheader("Upload an Image")
+uploaded_file = st.file_uploader(
+    "Choose an image file",
+    type=["jpg", "jpeg", "png", "webp", "bmp"],
+    help="Upload an image to apply the pet vision filter"
 )
 
-if input_mode == "📷 Live Camera":
-    st.subheader("Live Camera Feed")
-    webrtc_streamer(
-        key="pet-vision",
-        video_transformer_factory=PetVisionTransformer,
-        media_stream_constraints={"video": True, "audio": False},
-    )
-    st.info("Tip: If video is black, check browser camera permission (Chrome works best).")
-
-else:  # Upload Image
-    st.subheader("Upload an Image")
-    uploaded_file = st.file_uploader(
-        "Choose an image file",
-        type=["jpg", "jpeg", "png", "webp", "bmp"],
-        help="Upload an image to apply the pet vision filter"
-    )
+if uploaded_file is not None:
+    # Load image (PIL = RGB)
+    pil_image = Image.open(uploaded_file).convert("RGB")
+    img_rgb = np.array(pil_image)
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
     
-    if uploaded_file is not None:
-        # Load image (PIL = RGB)
-        pil_image = Image.open(uploaded_file).convert("RGB")
-        img_rgb = np.array(pil_image)
-        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-        
-        # Get current params
-        params = st.session_state.get("vision_params", {})
+    # Get current params
+    params = st.session_state.get("vision_params", {})
 
-        # --- PROCESSING ---
-        
-        # 1. Biological Vision Simulation (Retinal only)
-        # Apply color/blur filter to original BGR image
-        bio_bgr = apply_pet_filter_to_image(img_bgr, params)
-        bio_rgb = cv2.cvtColor(bio_bgr, cv2.COLOR_BGR2RGB)
-
-        # Prepare for Geometric/Combined
-        # We need the depth model for Approach 1
-        with st.spinner("🤖 AI is analyzing depth and perspective..."):
-            try:
-                # Calculate Depth
-                depth_pipe = load_depth_model()
-                depth_result = depth_pipe(pil_image)
-                depth_map = depth_result["depth"]
-
-                # 2. Geometric Perspective (Physical Viewpoint)
-                # NEW LOGIC: Determine height based on mode
-                if params["mode"] == "Cat":
-                    warp_strength = 0.8  # Short (Strong angle)
-                else:
-                    warp_strength = 0.5  # Tall (Mild angle)
-
-                # Updated function call (make sure you renamed the function definition too!)
-                geo_rgb = apply_pet_perspective_warp(img_rgb, depth_map, mode=params["mode"], strength=warp_strength)
-
-                # 3. Complete Simulation (Combined)
-                # Take the warped image (geo_rgb) and apply the biological filter
-                geo_bgr = cv2.cvtColor(geo_rgb, cv2.COLOR_RGB2BGR)
-                combined_bgr = apply_pet_filter_to_image(geo_bgr, params)
-                combined_rgb = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
-
-                # --- NEW: 4. Interest Analysis ---
-                interest_heatmap_bgr, peak_loc = analyze_pet_interest(combined_bgr, mode=params["mode"])
-                interest_heatmap_rgb = cv2.cvtColor(interest_heatmap_bgr, cv2.COLOR_BGR2RGB)
-
-                # Create an overlay (Heatmap on top of filtered image)
-                overlay_img = cv2.addWeighted(combined_rgb, 0.6, interest_heatmap_rgb, 0.4, 0)
-                # Draw a target circle on the peak interest point
-                cv2.circle(overlay_img, peak_loc, 20, (255, 255, 255), 3)
-
-            except Exception as e:
-                st.error(f"Error loading AI model: {e}")
-                st.stop()
-        
-        # --- DISPLAY RESULTS ---
-        st.write("### 1. The Main Comparison: Human vs. Cat")
-        st.caption("See the difference between your reality and the cat's full experience.")
-
-        # ROW 1: The Main Comparison (Original vs Complete)
-        top_col1, top_col2 = st.columns(2)
-        
-        with top_col1:
-            st.subheader("Human Reality")
-            st.image(pil_image, use_container_width=True)
-            st.info("**Human Body + Human Eyes**\n\nStandard standing height (approx. 1.7m) with trichromatic (3-color) sharp vision.")
-
-        # Dynamic Text Variables
-        current_mode = params["mode"]
-        if current_mode == "Cat":
-            body_desc = "Standing height approx. 20cm. Objects loom over you significantly."
-        else:
-            body_desc = "Standing height approx. 50cm. The angle is lower than human, but higher than a cat."
-
-        with top_col2:
-            st.subheader(f"{current_mode} Reality")
-            st.image(combined_rgb, use_container_width=True)
-            st.success(f"**{current_mode} Body + {current_mode} Eyes**\n\n{body_desc}")
-
-        st.write("---")
-        st.write("### 2. Why is it so different?")
-        st.write("We break down the transformation into two key factors: Biology and Physics.")
-
-        # ROW 2: The Breakdown (Bio vs Geo)
-        bot_col1, bot_col2 = st.columns(2)
-
-        with bot_col1:
-            st.markdown("#### Factor A: Biology (The Eyes)")
-            st.image(bio_rgb, use_container_width=True)
-            st.warning(
-                "**Retinal Processing Only**\n\n"
-                "Even if a cat stood as tall as a human, the world would look like this. "
-                "Cats are dichromatic (Red-Green colorblind) and have lower visual acuity (blurrier) "
-                "to prioritize motion detection over detail."
-            )
-            
-        with bot_col2:
-            st.markdown("#### Factor B: Physics (The Body)")
-            st.image(geo_rgb, use_container_width=True)
-            st.warning(
-                "**Physical Perspective Only**\n\n"
-                f"If a human crawled at {current_mode} height, the world would look like this. "
-                "Notice the 'Keystone Effect': because you are looking UP, vertical lines "
-                "converge inward, making them feel taller and more imposing."
-            )
-        # ROW 3: Interest Analysis
-        st.write("---")
-        st.write("### 3. Visual Attention Analysis")
-        st.caption(f"Where is a {current_mode} most likely to look?")
-
-        col_int1, col_int2 = st.columns(2)
-
-        with col_int1:
-            st.image(overlay_img, use_container_width=True)
-            st.info("**Attention Heatmap**\n\nBright red zones indicate high visual 'weight' based on contrast, shape, and height.")
-
-        with col_int2:
-        # Crop a small square around the peak interest point
-            x, y = peak_loc
-        # Ensure crop stays within image bounds
-            x1, x2 = max(0, x-75), min(img_rgb.shape[1], x+75)
-            y1, y2 = max(0, y-75), min(img_rgb.shape[0], y+75)
-            crop = img_rgb[y1:y2, x1:x2]
+    # --- PROCESSING ---
     
-            st.image(crop, caption="Primary Object of Interest (Human View)")
-            st.warning(f"**Analysis:** Based on {current_mode} biology, this object is the most likely to grab their attention first.")
+    # 1. Biological Vision Simulation (Retinal only)
+    # Apply color/blur filter to original BGR image
+    bio_bgr = apply_pet_filter_to_image(img_bgr, params)
+    bio_rgb = cv2.cvtColor(bio_bgr, cv2.COLOR_BGR2RGB)
 
-        # ROW 4: Cat Attractiveness Scoring (only for Cat mode)
-        if current_mode == "Cat":
-            st.write("---")
-            st.write("### 4. 🐱 Cat Attractiveness Score")
-            st.caption("How appealing is this space to a cat? AI analyzes objects and visual features.")
-            
-            with st.spinner("🔍 Analyzing space attractiveness for cats..."):
-                try:
-                    detector_model = load_detector_model()
-                    cat_scores, debug_info = score_cat_attractiveness(
-                        img_bgr, 
-                        detector_model=detector_model,
-                        return_debug=True
-                    )
-                    
-                    # Display overall score prominently
-                    overall_pct = int(cat_scores.overall * 100)
-                    if overall_pct >= 70:
-                        score_color = "🟢"
-                        score_msg = "Excellent! A cat would love this space."
-                    elif overall_pct >= 50:
-                        score_color = "🟡"
-                        score_msg = "Good. This space has nice cat-friendly features."
-                    elif overall_pct >= 30:
-                        score_color = "🟠"
-                        score_msg = "Okay. Some improvements could make it more cat-friendly."
-                    else:
-                        score_color = "🔴"
-                        score_msg = "Low. This space may not be very appealing to cats."
-                    
-                    st.metric(
-                        label=f"{score_color} Overall Cat Attractiveness",
-                        value=f"{overall_pct}%",
-                        help=score_msg
-                    )
-                    st.caption(score_msg)
-                    
-                    # Display individual dimension scores
-                    score_cols = st.columns(5)
-                    
-                    dimensions = [
-                        ("🧗 Vertical", cat_scores.vertical_opportunity, "Climbing & perching opportunities"),
-                        ("🏠 Shelter", cat_scores.shelter_hiding, "Hiding spots & enclosed spaces"),
-                        ("☀️ Cozy", cat_scores.cozy_warmth, "Warm & comfortable areas"),
-                        ("🎯 Explore", cat_scores.exploration_richness, "Interesting objects to investigate"),
-                        ("🛡️ Safety", cat_scores.safety_low_threat, "Low threat level & security"),
-                    ]
-                    
-                    for col, (label, score, tooltip) in zip(score_cols, dimensions):
-                        with col:
-                            pct = int(score * 100)
-                            st.metric(label=label, value=f"{pct}%", help=tooltip)
-                    
-                    # Show annotated image with bounding boxes and detected objects
-                    detections = debug_info.get("detections", []) if debug_info else []
-                    
-                    if detections:
-                        st.write("#### Detected Objects")
-                        
-                        # Draw bounding boxes on original image
-                        annotated_img = draw_detections_on_image(img_rgb, detections)
-                        st.image(annotated_img, use_container_width=True)
-                        
-                        # Legend for categories
-                        st.caption("**Category Legend:** 🧗 Vertical (Orange) | 🏠 Shelter (Purple) | ☀️ Cozy (Pink) | 🎯 Explore (Green) | ⚠️ Threat (Red) | Uncategorized (Gray)")
-                        
-                        # Show object summary in expander
-                        with st.expander("🔎 Detection Details"):
-                            # Group by category
-                            by_category: Dict[str, List[str]] = {}
-                            for det in detections:
-                                cat_key = det.category or "uncategorized"
-                                if cat_key not in by_category:
-                                    by_category[cat_key] = []
-                                by_category[cat_key].append(det.class_name)
-                            
-                            for cat_key, objects in by_category.items():
-                                cat_display = CATEGORY_NAMES.get(cat_key, cat_key.title())
-                                obj_counts = {}
-                                for obj in objects:
-                                    obj_counts[obj] = obj_counts.get(obj, 0) + 1
-                                obj_str = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
-                                st.write(f"**{cat_display}:** {obj_str}")
-                    else:
-                        st.info("No objects detected in this image.")
-                                
-                except Exception as e:
-                    st.error(f"Error analyzing cat attractiveness: {e}")
+    # Prepare for Geometric/Combined
+    # We need the depth model for Approach 1
+    with st.spinner("🤖 AI is analyzing depth and perspective..."):
+        try:
+            # Calculate Depth
+            depth_pipe = load_depth_model()
+            depth_result = depth_pipe(pil_image)
+            depth_map = depth_result["depth"]
 
-        # --- DOWNLOADS ---
-        st.write("---")
-        st.markdown("##### Download Results")
-        d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+            # 2. Geometric Perspective (Physical Viewpoint)
+            # NEW LOGIC: Determine height based on mode
+            if params["mode"] == "Cat":
+                warp_strength = 0.8  # Short (Strong angle)
+            else:
+                warp_strength = 0.5  # Tall (Mild angle)
 
-        # Helper to create download buttons
-        def create_download(image_array):
-            pil_img = Image.fromarray(image_array)
-            buf = io.BytesIO()
-            pil_img.save(buf, format="PNG")
-            return buf.getvalue()
+            # Updated function call (make sure you renamed the function definition too!)
+            geo_rgb = apply_pet_perspective_warp(img_rgb, depth_map, mode=params["mode"], strength=warp_strength)
 
-        with d_col1:
-             st.download_button("⬇️ Human (Orig)", create_download(img_rgb), "human_view.png", "image/png")
-        with d_col2:
-             st.download_button("⬇️ Factor A (Bio)", create_download(bio_rgb), "bio_view.png", "image/png")
-        with d_col3:
-             st.download_button("⬇️ Factor B (Geo)", create_download(geo_rgb), "geo_view.png", "image/png")
-        with d_col4:
-             st.download_button("⬇️ Cat (Complete)", create_download(combined_rgb), "cat_complete.png", "image/png")
+            # 3. Complete Simulation (Combined)
+            # Take the warped image (geo_rgb) and apply the biological filter
+            geo_bgr = cv2.cvtColor(geo_rgb, cv2.COLOR_RGB2BGR)
+            combined_bgr = apply_pet_filter_to_image(geo_bgr, params)
+            combined_rgb = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
 
+            # --- NEW: 4. Interest Analysis ---
+            interest_heatmap_bgr, peak_loc = analyze_pet_interest(combined_bgr, mode=params["mode"])
+            interest_heatmap_rgb = cv2.cvtColor(interest_heatmap_bgr, cv2.COLOR_BGR2RGB)
+
+            # Create an overlay (Heatmap on top of filtered image)
+            overlay_img = cv2.addWeighted(combined_rgb, 0.6, interest_heatmap_rgb, 0.4, 0)
+            # Draw a target circle on the peak interest point
+            cv2.circle(overlay_img, peak_loc, 20, (255, 255, 255), 3)
+
+        except Exception as e:
+            st.error(f"Error loading AI model: {e}")
+            st.stop()
+    
+    # --- DISPLAY RESULTS ---
+    st.write("### 1. The Main Comparison: Human vs. Cat")
+    st.caption("See the difference between your reality and the cat's full experience.")
+
+    # ROW 1: The Main Comparison (Original vs Complete)
+    top_col1, top_col2 = st.columns(2)
+    
+    with top_col1:
+        st.subheader("Human Reality")
+        st.image(pil_image, use_container_width=True)
+        st.info("**Human Body + Human Eyes**\n\nStandard standing height (approx. 1.7m) with trichromatic (3-color) sharp vision.")
+
+    # Dynamic Text Variables
+    current_mode = params["mode"]
+    if current_mode == "Cat":
+        body_desc = "Standing height approx. 20cm. Objects loom over you significantly."
     else:
-        st.info("👆 Upload an image above to see the 3-stage simulation!")
+        body_desc = "Standing height approx. 50cm. The angle is lower than human, but higher than a cat."
+
+    with top_col2:
+        st.subheader(f"{current_mode} Reality")
+        st.image(combined_rgb, use_container_width=True)
+        st.success(f"**{current_mode} Body + {current_mode} Eyes**\n\n{body_desc}")
+
+    st.write("---")
+    st.write("### 2. Why is it so different?")
+    st.write("We break down the transformation into two key factors: Biology and Physics.")
+
+    # ROW 2: The Breakdown (Bio vs Geo)
+    bot_col1, bot_col2 = st.columns(2)
+
+    with bot_col1:
+        st.markdown("#### Factor A: Biology (The Eyes)")
+        st.image(bio_rgb, use_container_width=True)
+        st.warning(
+            "**Retinal Processing Only**\n\n"
+            "Even if a cat stood as tall as a human, the world would look like this. "
+            "Cats are dichromatic (Red-Green colorblind) and have lower visual acuity (blurrier) "
+            "to prioritize motion detection over detail."
+        )
+        
+    with bot_col2:
+        st.markdown("#### Factor B: Physics (The Body)")
+        st.image(geo_rgb, use_container_width=True)
+        st.warning(
+            "**Physical Perspective Only**\n\n"
+            f"If a human crawled at {current_mode} height, the world would look like this. "
+            "Notice the 'Keystone Effect': because you are looking UP, vertical lines "
+            "converge inward, making them feel taller and more imposing."
+        )
+    # ROW 3: Interest Analysis
+    st.write("---")
+    st.write("### 3. Visual Attention Analysis")
+    st.caption(f"Where is a {current_mode} most likely to look?")
+
+    col_int1, col_int2 = st.columns(2)
+
+    with col_int1:
+        st.image(overlay_img, use_container_width=True)
+        st.info("**Attention Heatmap**\n\nBright red zones indicate high visual 'weight' based on contrast, shape, and height.")
+
+    with col_int2:
+        # Crop a small square around the peak interest point
+        x, y = peak_loc
+        # Ensure crop stays within image bounds
+        x1, x2 = max(0, x-75), min(img_rgb.shape[1], x+75)
+        y1, y2 = max(0, y-75), min(img_rgb.shape[0], y+75)
+        crop = img_rgb[y1:y2, x1:x2]
+
+        st.image(crop, caption="Primary Object of Interest (Human View)")
+        st.warning(f"**Analysis:** Based on {current_mode} biology, this object is the most likely to grab their attention first.")
+
+    # ROW 4: Cat Attractiveness Scoring (only for Cat mode)
+    if current_mode == "Cat":
+        st.write("---")
+        st.write("### 4. 🐱 Cat Attractiveness Score")
+        st.caption("How appealing is this space to a cat? AI analyzes objects and visual features.")
+        
+        with st.spinner("🔍 Analyzing space attractiveness for cats..."):
+            try:
+                detector_model = load_detector_model()
+                cat_scores, debug_info = score_cat_attractiveness(
+                    img_bgr, 
+                    detector_model=detector_model,
+                    return_debug=True
+                )
+                
+                # Display overall score prominently
+                overall_pct = int(cat_scores.overall * 100)
+                if overall_pct >= 70:
+                    score_color = "🟢"
+                    score_msg = "Excellent! A cat would love this space."
+                elif overall_pct >= 50:
+                    score_color = "🟡"
+                    score_msg = "Good. This space has nice cat-friendly features."
+                elif overall_pct >= 30:
+                    score_color = "🟠"
+                    score_msg = "Okay. Some improvements could make it more cat-friendly."
+                else:
+                    score_color = "🔴"
+                    score_msg = "Low. This space may not be very appealing to cats."
+                
+                st.metric(
+                    label=f"{score_color} Overall Cat Attractiveness",
+                    value=f"{overall_pct}%",
+                    help=score_msg
+                )
+                st.caption(score_msg)
+                
+                # Display individual dimension scores
+                score_cols = st.columns(5)
+                
+                dimensions = [
+                    ("🧗 Vertical", cat_scores.vertical_opportunity, "Climbing & perching opportunities"),
+                    ("🏠 Shelter", cat_scores.shelter_hiding, "Hiding spots & enclosed spaces"),
+                    ("☀️ Cozy", cat_scores.cozy_warmth, "Warm & comfortable areas"),
+                    ("🎯 Explore", cat_scores.exploration_richness, "Interesting objects to investigate"),
+                    ("🛡️ Safety", cat_scores.safety_low_threat, "Low threat level & security"),
+                ]
+                
+                for col, (label, score, tooltip) in zip(score_cols, dimensions):
+                    with col:
+                        pct = int(score * 100)
+                        st.metric(label=label, value=f"{pct}%", help=tooltip)
+                
+                # Show annotated image with bounding boxes and detected objects
+                detections = debug_info.get("detections", []) if debug_info else []
+                
+                if detections:
+                    st.write("#### Detected Objects")
+                    
+                    # Draw bounding boxes on original image
+                    annotated_img = draw_detections_on_image(img_rgb, detections)
+                    st.image(annotated_img, use_container_width=True)
+                    
+                    # Legend for categories
+                    st.caption("**Category Legend:** 🧗 Vertical (Orange) | 🏠 Shelter (Purple) | ☀️ Cozy (Pink) | 🎯 Explore (Green) | ⚠️ Threat (Red) | Uncategorized (Gray)")
+                    
+                    # Show object summary in expander
+                    with st.expander("🔎 Detection Details"):
+                        # Group by category
+                        by_category: Dict[str, List[str]] = {}
+                        for det in detections:
+                            cat_key = det.category or "uncategorized"
+                            if cat_key not in by_category:
+                                by_category[cat_key] = []
+                            by_category[cat_key].append(det.class_name)
+                        
+                        for cat_key, objects in by_category.items():
+                            cat_display = CATEGORY_NAMES.get(cat_key, cat_key.title())
+                            obj_counts = {}
+                            for obj in objects:
+                                obj_counts[obj] = obj_counts.get(obj, 0) + 1
+                            obj_str = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                            st.write(f"**{cat_display}:** {obj_str}")
+                else:
+                    st.info("No objects detected in this image.")
+                            
+            except Exception as e:
+                st.error(f"Error analyzing cat attractiveness: {e}")
+
+    # --- DOWNLOADS ---
+    st.write("---")
+    st.markdown("##### Download Results")
+    d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+
+    # Helper to create download buttons
+    def create_download(image_array):
+        pil_img = Image.fromarray(image_array)
+        buf = io.BytesIO()
+        pil_img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    with d_col1:
+        st.download_button("⬇️ Human (Orig)", create_download(img_rgb), "human_view.png", "image/png")
+    with d_col2:
+        st.download_button("⬇️ Factor A (Bio)", create_download(bio_rgb), "bio_view.png", "image/png")
+    with d_col3:
+        st.download_button("⬇️ Factor B (Geo)", create_download(geo_rgb), "geo_view.png", "image/png")
+    with d_col4:
+        st.download_button("⬇️ Cat (Complete)", create_download(combined_rgb), "cat_complete.png", "image/png")
+
+else:
+    st.info("👆 Upload an image above to see the 3-stage simulation!")
