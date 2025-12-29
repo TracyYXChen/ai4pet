@@ -648,8 +648,14 @@ if uploaded_file is not None:
                         suggestions = suggestion_engine.suggest(cat_scores, debug_info)
                         
                         if suggestions:
-                            for i, sug in enumerate(suggestions, 1):
-                                # Category emoji mapping
+                            # Separate suggestions into free and paid
+                            free_suggestions = [s for s in suggestions if s.cost == "free"]
+                            paid_suggestions = [s for s in suggestions if s.cost != "free"]
+                            
+                            tab_free, tab_paid = st.tabs(["🆓 Free", "💵 Paid"])
+                            
+                            def render_suggestion(sug, expanded=False):
+                                """Render a single suggestion in an expander."""
                                 cat_emoji = {
                                     "vertical": "🧗",
                                     "shelter": "🏠",
@@ -657,18 +663,14 @@ if uploaded_file is not None:
                                     "exploration": "🎯",
                                     "safety": "🛡️",
                                 }.get(sug.category, "💡")
-                                
-                                # Effort/cost badges
                                 effort_badge = {"tiny": "⚡", "small": "🔧", "medium": "🔨"}.get(sug.effort, "")
-                                cost_badge = {"free": "🆓", "low": "💵", "medium": "💰"}.get(sug.cost, "")
                                 
-                                with st.expander(f"{cat_emoji} **{sug.title}** {effort_badge}{cost_badge}", expanded=(i == 1)):
+                                with st.expander(f"{cat_emoji} **{sug.title}** {effort_badge}", expanded=expanded):
                                     st.markdown(f"**Why it helps:** {sug.why_it_helps}")
                                     st.markdown("**Steps:**")
                                     for step_num, step in enumerate(sug.steps, 1):
                                         st.markdown(f"{step_num}. {step}")
                                     
-                                    # Show expected improvements
                                     if sug.expected_score_lift:
                                         lift_parts = []
                                         for dim, lift in sug.expected_score_lift.items():
@@ -676,7 +678,21 @@ if uploaded_file is not None:
                                             lift_parts.append(f"{dim_display}: +{int(lift * 100)}%")
                                         st.caption(f"📈 Expected improvement: {', '.join(lift_parts)}")
                                     
-                                    st.caption(f"Effort: {sug.effort.title()} | Cost: {sug.cost.title()}")
+                                    st.caption(f"Effort: {sug.effort.title()}")
+                            
+                            with tab_free:
+                                if free_suggestions:
+                                    for i, sug in enumerate(free_suggestions):
+                                        render_suggestion(sug, expanded=(i == 0))
+                                else:
+                                    st.info("No free suggestions available for this space.")
+                            
+                            with tab_paid:
+                                if paid_suggestions:
+                                    for i, sug in enumerate(paid_suggestions):
+                                        render_suggestion(sug, expanded=(i == 0))
+                                else:
+                                    st.info("No paid suggestions needed for this space.")
                         else:
                             st.success("🎉 This space already looks great for cats! No major improvements needed.")
                             
