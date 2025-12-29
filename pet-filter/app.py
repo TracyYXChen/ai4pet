@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import cv2
 import io
+import yaml
 from PIL import Image
 
 from transformers import pipeline
@@ -11,6 +12,7 @@ from rate_cat_attractiveness import (
     DetectedObject,
     CATEGORY_NAMES,
 )
+from suggest_room_changes import CatRoomSuggestionEngine, Suggestion
 from ultralytics import YOLO
 from typing import Tuple, Dict, Any, Optional, List
 import tempfile
@@ -30,6 +32,18 @@ def load_depth_model():
 def load_detector_model(weights: str = "yolov8n.pt"):
     """Load and cache the object detection model for cat attractiveness scoring."""
     return YOLO(weights)
+
+
+# 3. Load config for API keys
+@st.cache_resource
+def load_config():
+    """Load configuration from config.yaml file."""
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+    try:
+        with open(config_path, "r") as f:
+            return yaml.safe_load(f)
+    except Exception:
+        return {}
 
 
 # Category colors for bounding box visualization (BGR format for OpenCV)
@@ -614,6 +628,60 @@ if uploaded_file is not None:
                             st.write(f"**{cat_display}:** {obj_str}")
                 else:
                     st.info("No objects detected in this image.")
+                
+                # ROW 5: Room Improvement Suggestions
+                st.write("---")
+                st.write("### 5. 💡 Room Improvement Suggestions")
+                st.caption("Tenant-friendly tips to make this space more cat-attractive.")
+                
+                with st.spinner("🤔 Generating personalized suggestions..."):
+                    try:
+                        config = load_config()
+                        openai_api_key = config.get("openai_api_key")
+                        
+                        suggestion_engine = CatRoomSuggestionEngine(
+                            openai_api_key=openai_api_key,
+                            max_suggestions=5,
+                            use_openai=bool(openai_api_key),
+                        )
+                        
+                        suggestions = suggestion_engine.suggest(cat_scores, debug_info)
+                        
+                        if suggestions:
+                            for i, sug in enumerate(suggestions, 1):
+                                # Category emoji mapping
+                                cat_emoji = {
+                                    "vertical": "🧗",
+                                    "shelter": "🏠",
+                                    "cozy": "☀️",
+                                    "exploration": "🎯",
+                                    "safety": "🛡️",
+                                }.get(sug.category, "💡")
+                                
+                                # Effort/cost badges
+                                effort_badge = {"tiny": "⚡", "small": "🔧", "medium": "🔨"}.get(sug.effort, "")
+                                cost_badge = {"free": "🆓", "low": "💵", "medium": "💰"}.get(sug.cost, "")
+                                
+                                with st.expander(f"{cat_emoji} **{sug.title}** {effort_badge}{cost_badge}", expanded=(i == 1)):
+                                    st.markdown(f"**Why it helps:** {sug.why_it_helps}")
+                                    st.markdown("**Steps:**")
+                                    for step_num, step in enumerate(sug.steps, 1):
+                                        st.markdown(f"{step_num}. {step}")
+                                    
+                                    # Show expected improvements
+                                    if sug.expected_score_lift:
+                                        lift_parts = []
+                                        for dim, lift in sug.expected_score_lift.items():
+                                            dim_display = dim.replace("_", " ").title()
+                                            lift_parts.append(f"{dim_display}: +{int(lift * 100)}%")
+                                        st.caption(f"📈 Expected improvement: {', '.join(lift_parts)}")
+                                    
+                                    st.caption(f"Effort: {sug.effort.title()} | Cost: {sug.cost.title()}")
+                        else:
+                            st.success("🎉 This space already looks great for cats! No major improvements needed.")
+                            
+                    except Exception as e:
+                        st.warning(f"Could not generate suggestions: {e}")
                             
             except Exception as e:
                 st.error(f"Error analyzing cat attractiveness: {e}")
