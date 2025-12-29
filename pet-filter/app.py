@@ -12,7 +12,7 @@ from rate_cat_attractiveness import (
     DetectedObject,
     CATEGORY_NAMES,
 )
-from suggest_room_changes import CatRoomSuggestionEngine, Suggestion
+from suggest_room_changes import CatRoomSuggestionEngine, Suggestion, AmazonLink
 from ultralytics import YOLO
 from typing import Tuple, Dict, Any, Optional, List
 import tempfile
@@ -654,7 +654,7 @@ if uploaded_file is not None:
                             
                             tab_free, tab_paid = st.tabs(["🆓 Free", "💵 Paid"])
                             
-                            def render_suggestion(sug, expanded=False):
+                            def render_suggestion(sug, expanded=False, show_amazon_links=False):
                                 """Render a single suggestion in an expander."""
                                 cat_emoji = {
                                     "vertical": "🧗",
@@ -679,6 +679,14 @@ if uploaded_file is not None:
                                         st.caption(f"📈 Expected improvement: {', '.join(lift_parts)}")
                                     
                                     st.caption(f"Effort: {sug.effort.title()}")
+                                    
+                                    # Show Amazon links for paid suggestions
+                                    if show_amazon_links and sug.amazon_links:
+                                        st.markdown("**🛒 Shop on Amazon:**")
+                                        link_cols = st.columns(min(len(sug.amazon_links), 3))
+                                        for idx, link in enumerate(sug.amazon_links[:3]):
+                                            with link_cols[idx]:
+                                                st.link_button(f"🔗 {link.label}", link.url, use_container_width=True)
                             
                             with tab_free:
                                 if free_suggestions:
@@ -690,7 +698,7 @@ if uploaded_file is not None:
                             with tab_paid:
                                 if paid_suggestions:
                                     for i, sug in enumerate(paid_suggestions):
-                                        render_suggestion(sug, expanded=(i == 0))
+                                        render_suggestion(sug, expanded=(i == 0), show_amazon_links=True)
                                 else:
                                     st.info("No paid suggestions needed for this space.")
                         else:
