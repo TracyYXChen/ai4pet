@@ -6,13 +6,23 @@ import yaml
 from PIL import Image
 
 from transformers import pipeline
+# Cat modules
 from rate_cat_attractiveness import (
     rate_cat_attractiveness_with_yolo, 
     CatEyeScores, 
-    DetectedObject,
-    CATEGORY_NAMES,
+    DetectedObject as CatDetectedObject,
+    CATEGORY_NAMES as CAT_CATEGORY_NAMES,
 )
-from suggest_room_changes import CatRoomSuggestionEngine, Suggestion, AmazonLink
+from suggest_cat_room_changes import CatRoomSuggestionEngine, Suggestion as CatSuggestion, AmazonLink
+
+# Dog modules
+from rate_dog_attractiveness import (
+    rate_dog_attractiveness_with_yolo,
+    DogEyeScores,
+    DetectedObject as DogDetectedObject,
+    CATEGORY_NAMES as DOG_CATEGORY_NAMES,
+)
+from suggest_dog_room_changes import DogRoomSuggestionEngine, Suggestion as DogSuggestion
 from ultralytics import YOLO
 from typing import Tuple, Dict, Any, Optional, List
 import tempfile
@@ -97,7 +107,8 @@ CATEGORY_COLORS = {
 
 def draw_detections_on_image(
     img_rgb: np.ndarray,
-    detections: List[DetectedObject],
+    detections: List[Any],
+    category_names: Optional[Dict[str, str]] = None,
 ) -> np.ndarray:
     """
     Draw bounding boxes with object names and category labels on the image.
@@ -105,11 +116,13 @@ def draw_detections_on_image(
     Args:
         img_rgb: RGB image as numpy array
         detections: List of DetectedObject with bbox and category info
+        category_names: Dict mapping category keys to display names
         
     Returns:
         RGB image with annotations drawn
     """
     annotated = img_rgb.copy()
+    category_names = category_names or {}
     
     for det in detections:
         x1, y1, x2, y2 = det.bbox
@@ -124,7 +137,7 @@ def draw_detections_on_image(
         
         # Prepare label text
         if category:
-            category_display = CATEGORY_NAMES.get(category, category.title())
+            category_display = category_names.get(category, category.title())
             label = f"{det.class_name} [{category_display}]"
         else:
             label = det.class_name
@@ -223,6 +236,67 @@ def score_cat_attractiveness(
         )
     
     return scores, debug
+
+
+def score_dog_attractiveness(
+    image_input: str | np.ndarray,
+    detector_model = None,
+    detector_weights: str = "yolov8n.pt",
+    conf: float = 0.25,
+    iou: float = 0.45,
+    return_debug: bool = False,
+) -> Tuple[DogEyeScores, Optional[Dict[str, Any]]]:
+    """
+    Score how attractive a space is to a dog.
+    
+    Args:
+        image_input: Either a file path (str) or a BGR numpy array
+        detector_model: Optional pre-loaded detection model (for efficiency)
+        detector_weights: Model weights file if model not provided
+        conf: Detection confidence threshold
+        iou: Detection IOU threshold
+        return_debug: Whether to return debug information
+        
+    Returns:
+        Tuple of (DogEyeScores, debug_dict or None)
+        
+        DogEyeScores contains:
+        - floor_play_space: Score for open floor/play space (0-1)
+        - rest_cozy: Score for resting/cozy spots (0-1)
+        - sniff_enrichment: Score for sniffing/enrichment opportunities (0-1)
+        - water_food_ready: Score for water/food accessibility (0-1)
+        - safety_low_threat: Score for safety/low threat level (0-1)
+        - overall: Weighted overall attractiveness score (0-1)
+    """
+    # If input is a numpy array, save to temp file since the underlying function expects a path
+    if isinstance(image_input, np.ndarray):
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+            cv2.imwrite(tmp_path, image_input)
+        try:
+            scores, debug = rate_dog_attractiveness_with_yolo(
+                image_path=tmp_path,
+                yolo_model=detector_model,
+                yolo_weights=detector_weights,
+                conf=conf,
+                iou=iou,
+                return_debug=return_debug,
+            )
+        finally:
+            os.unlink(tmp_path)  # Clean up temp file
+    else:
+        # Input is a file path
+        scores, debug = rate_dog_attractiveness_with_yolo(
+            image_path=image_input,
+            yolo_model=detector_model,
+            yolo_weights=detector_weights,
+            conf=conf,
+            iou=iou,
+            return_debug=return_debug,
+        )
+    
+    return scores, debug
+
 
 # 2. The Geometric Perspective Warp (Approach 1: Keystone + Depth)
 def apply_pet_perspective_warp(image_rgb, depth_map, mode="Cat", strength=1.0):
@@ -581,214 +655,254 @@ if uploaded_file is not None:
         st.image(crop, caption="Primary Object of Interest (Human View)")
         st.warning(f"**Analysis:** Based on {current_mode} biology, this object is the most likely to grab their attention first.")
 
-    # ROW 4: Cat Attractiveness Scoring (only for Cat mode)
-    if current_mode == "Cat":
-        st.write("---")
-        st.write("### 4. 🐱 Cat Attractiveness Score")
-        st.caption("How appealing is this space to a cat? AI analyzes objects and visual features.")
-        
-        with st.spinner("🔍 Analyzing space attractiveness for cats..."):
-            try:
-                detector_model = load_detector_model()
-                cat_scores, debug_info = score_cat_attractiveness(
+    # ROW 4: Pet Attractiveness Scoring
+    st.write("---")
+    pet_emoji = "🐱" if current_mode == "Cat" else "🐕"
+    st.write(f"### 4. {pet_emoji} {current_mode} Attractiveness Score")
+    st.caption(f"How appealing is this space to a {current_mode.lower()}? AI analyzes objects and visual features.")
+    
+    with st.spinner(f"🔍 Analyzing space attractiveness for {current_mode.lower()}s..."):
+        try:
+            detector_model = load_detector_model()
+            
+            # Use appropriate scoring function based on mode
+            if current_mode == "Cat":
+                pet_scores, debug_info = score_cat_attractiveness(
                     img_bgr, 
                     detector_model=detector_model,
                     return_debug=True
                 )
-                
-                # Display overall score prominently
-                overall_pct = int(cat_scores.overall * 100)
-                if overall_pct >= 70:
-                    score_color = "🟢"
-                    score_msg = "Excellent! A cat would love this space."
-                elif overall_pct >= 50:
-                    score_color = "🟡"
-                    score_msg = "Good. This space has nice cat-friendly features."
-                elif overall_pct >= 30:
-                    score_color = "🟠"
-                    score_msg = "Okay. Some improvements could make it more cat-friendly."
-                else:
-                    score_color = "🔴"
-                    score_msg = "Low. This space may not be very appealing to cats."
-                
-                st.metric(
-                    label=f"{score_color} Overall Cat Attractiveness",
-                    value=f"{overall_pct}%",
-                    help=score_msg
+                category_names = CAT_CATEGORY_NAMES
+            else:  # Dog mode
+                pet_scores, debug_info = score_dog_attractiveness(
+                    img_bgr, 
+                    detector_model=detector_model,
+                    return_debug=True
                 )
-                st.caption(score_msg)
-                
-                # Display individual dimension scores
-                score_cols = st.columns(5)
-                
+                category_names = DOG_CATEGORY_NAMES
+            
+            # Display overall score prominently
+            overall_pct = int(pet_scores.overall * 100)
+            if overall_pct >= 70:
+                score_color = "🟢"
+                score_msg = f"Excellent! A {current_mode.lower()} would love this space."
+            elif overall_pct >= 50:
+                score_color = "🟡"
+                score_msg = f"Good. This space has nice {current_mode.lower()}-friendly features."
+            elif overall_pct >= 30:
+                score_color = "🟠"
+                score_msg = f"Okay. Some improvements could make it more {current_mode.lower()}-friendly."
+            else:
+                score_color = "🔴"
+                score_msg = f"Low. This space may not be very appealing to {current_mode.lower()}s."
+            
+            st.metric(
+                label=f"{score_color} Overall {current_mode} Attractiveness",
+                value=f"{overall_pct}%",
+                help=score_msg
+            )
+            st.caption(score_msg)
+            
+            # Display individual dimension scores based on pet type
+            score_cols = st.columns(5)
+            
+            if current_mode == "Cat":
                 dimensions = [
-                    ("🧗 Vertical", cat_scores.vertical_opportunity, "Climbing & perching opportunities"),
-                    ("🏠 Shelter", cat_scores.shelter_hiding, "Hiding spots & enclosed spaces"),
-                    ("☀️ Cozy", cat_scores.cozy_warmth, "Warm & comfortable areas"),
-                    ("🎯 Explore", cat_scores.exploration_richness, "Interesting objects to investigate"),
-                    ("🛡️ Safety", cat_scores.safety_low_threat, "Low threat level & security"),
+                    ("🧗 Vertical", pet_scores.vertical_opportunity, "Climbing & perching opportunities"),
+                    ("🏠 Shelter", pet_scores.shelter_hiding, "Hiding spots & enclosed spaces"),
+                    ("☀️ Cozy", pet_scores.cozy_warmth, "Warm & comfortable areas"),
+                    ("🎯 Explore", pet_scores.exploration_richness, "Interesting objects to investigate"),
+                    ("🛡️ Safety", pet_scores.safety_low_threat, "Low threat level & security"),
                 ]
+            else:  # Dog mode
+                dimensions = [
+                    ("🏃 Floor/Play", pet_scores.floor_play_space, "Open floor space for play"),
+                    ("🛋️ Rest", pet_scores.rest_cozy, "Comfortable resting spots"),
+                    ("👃 Sniff", pet_scores.sniff_enrichment, "Sniffing & enrichment opportunities"),
+                    ("🥣 Food/Water", pet_scores.water_food_ready, "Water & food accessibility"),
+                    ("🛡️ Safety", pet_scores.safety_low_threat, "Low threat level & security"),
+                ]
+            
+            for col, (label, score, tooltip) in zip(score_cols, dimensions):
+                with col:
+                    pct = int(score * 100)
+                    st.metric(label=label, value=f"{pct}%", help=tooltip)
+            
+            # Show annotated image with bounding boxes and detected objects
+            detections = debug_info.get("detections", []) if debug_info else []
+            
+            if detections:
+                st.write("#### Detected Objects")
                 
-                for col, (label, score, tooltip) in zip(score_cols, dimensions):
-                    with col:
-                        pct = int(score * 100)
-                        st.metric(label=label, value=f"{pct}%", help=tooltip)
+                # Draw bounding boxes on original image
+                annotated_img = draw_detections_on_image(img_rgb, detections, category_names)
+                st.image(annotated_img, use_container_width=True)
                 
-                # Show annotated image with bounding boxes and detected objects
-                detections = debug_info.get("detections", []) if debug_info else []
-                
-                if detections:
-                    st.write("#### Detected Objects")
-                    
-                    # Draw bounding boxes on original image
-                    annotated_img = draw_detections_on_image(img_rgb, detections)
-                    st.image(annotated_img, use_container_width=True)
-                    
-                    # Legend for categories
+                # Legend for categories based on pet type
+                if current_mode == "Cat":
                     st.caption("**Category Legend:** 🧗 Vertical (Orange) | 🏠 Shelter (Purple) | ☀️ Cozy (Pink) | 🎯 Explore (Green) | ⚠️ Threat (Red) | Uncategorized (Gray)")
-                    
-                    # Show object summary in expander
-                    with st.expander("🔎 Detection Details"):
-                        # Group by category
-                        by_category: Dict[str, List[str]] = {}
-                        for det in detections:
-                            cat_key = det.category or "uncategorized"
-                            if cat_key not in by_category:
-                                by_category[cat_key] = []
-                            by_category[cat_key].append(det.class_name)
-                        
-                        for cat_key, objects in by_category.items():
-                            cat_display = CATEGORY_NAMES.get(cat_key, cat_key.title())
-                            obj_counts = {}
-                            for obj in objects:
-                                obj_counts[obj] = obj_counts.get(obj, 0) + 1
-                            obj_str = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
-                            st.write(f"**{cat_display}:** {obj_str}")
                 else:
-                    st.info("No objects detected in this image.")
+                    st.caption("**Category Legend:** 🏃 Floor (Orange) | 🛋️ Rest (Purple) | 👃 Sniff (Pink) | 🥣 Food/Water (Green) | ⚠️ Threat (Red) | Uncategorized (Gray)")
                 
-                # ROW 5: Room Improvement Suggestions
-                st.write("---")
-                st.write("### 5. 💡 Room Improvement Suggestions")
-                st.caption("Tenant-friendly tips to make this space more cat-attractive.")
-                
-                # Toggle for illustrated diagrams
-                generate_diagrams = st.checkbox(
-                    "🎨 Generate illustrated diagrams for each step",
-                    value=False,
-                    help="Uses AI to create simple visual diagrams for each step. May take a few seconds per step."
-                )
-                
-                with st.spinner("🤔 Generating personalized suggestions..."):
-                    try:
-                        config = load_config()
-                        openai_api_key = config.get("openai_api_key")
-                        
+                # Show object summary in expander
+                with st.expander("🔎 Detection Details"):
+                    # Group by category
+                    by_category: Dict[str, List[str]] = {}
+                    for det in detections:
+                        cat_key = det.category or "uncategorized"
+                        if cat_key not in by_category:
+                            by_category[cat_key] = []
+                        by_category[cat_key].append(det.class_name)
+                    
+                    for cat_key, objects in by_category.items():
+                        cat_display = category_names.get(cat_key, cat_key.title())
+                        obj_counts = {}
+                        for obj in objects:
+                            obj_counts[obj] = obj_counts.get(obj, 0) + 1
+                        obj_str = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        st.write(f"**{cat_display}:** {obj_str}")
+            else:
+                st.info("No objects detected in this image.")
+            
+            # ROW 5: Room Improvement Suggestions
+            st.write("---")
+            st.write("### 5. 💡 Room Improvement Suggestions")
+            st.caption(f"Tenant-friendly tips to make this space more {current_mode.lower()}-attractive.")
+            
+            # Toggle for illustrated diagrams
+            generate_diagrams = st.checkbox(
+                "🎨 Generate illustrated diagrams for each step",
+                value=False,
+                help="Uses AI to create simple visual diagrams for each step. May take a few seconds per step."
+            )
+            
+            with st.spinner("🤔 Generating personalized suggestions..."):
+                try:
+                    config = load_config()
+                    openai_api_key = config.get("openai_api_key")
+                    
+                    # Use appropriate suggestion engine based on mode
+                    if current_mode == "Cat":
                         suggestion_engine = CatRoomSuggestionEngine(
                             openai_api_key=openai_api_key,
                             max_suggestions=5,
                             use_openai=bool(openai_api_key),
                         )
+                    else:  # Dog mode
+                        suggestion_engine = DogRoomSuggestionEngine(
+                            openai_api_key=openai_api_key,
+                            max_suggestions=5,
+                            use_openai=bool(openai_api_key),
+                        )
+                    
+                    suggestions = suggestion_engine.suggest(pet_scores, debug_info)
+                    
+                    if suggestions:
+                        # Separate suggestions into free and paid
+                        free_suggestions = [s for s in suggestions if s.cost == "free"]
+                        paid_suggestions = [s for s in suggestions if s.cost != "free"]
                         
-                        suggestions = suggestion_engine.suggest(cat_scores, debug_info)
+                        tab_free, tab_paid = st.tabs(["🆓 Free", "💵 Paid"])
                         
-                        if suggestions:
-                            # Separate suggestions into free and paid
-                            free_suggestions = [s for s in suggestions if s.cost == "free"]
-                            paid_suggestions = [s for s in suggestions if s.cost != "free"]
+                        def render_suggestion(sug, expanded=False, show_amazon_links=False, generate_diagrams=False, api_key=None):
+                            """Render a single suggestion in an expander."""
+                            # Category emoji mapping for both cat and dog categories
+                            category_emojis = {
+                                # Cat categories
+                                "vertical": "🧗",
+                                "shelter": "🏠",
+                                "cozy": "☀️",
+                                "exploration": "🎯",
+                                # Dog categories
+                                "floor": "🏃",
+                                "rest": "🛋️",
+                                "sniff": "👃",
+                                "water_food": "🥣",
+                                # Shared
+                                "safety": "🛡️",
+                            }
+                            cat_emoji = category_emojis.get(sug.category, "💡")
+                            effort_badge = {"tiny": "⚡", "small": "🔧", "medium": "🔨"}.get(sug.effort, "")
                             
-                            tab_free, tab_paid = st.tabs(["🆓 Free", "💵 Paid"])
-                            
-                            def render_suggestion(sug, expanded=False, show_amazon_links=False, generate_diagrams=False, api_key=None):
-                                """Render a single suggestion in an expander."""
-                                cat_emoji = {
-                                    "vertical": "🧗",
-                                    "shelter": "🏠",
-                                    "cozy": "☀️",
-                                    "exploration": "🎯",
-                                    "safety": "🛡️",
-                                }.get(sug.category, "💡")
-                                effort_badge = {"tiny": "⚡", "small": "🔧", "medium": "🔨"}.get(sug.effort, "")
+                            with st.expander(f"{cat_emoji} **{sug.title}** {effort_badge}", expanded=expanded):
+                                st.markdown(f"**Why it helps:** {sug.why_it_helps}")
                                 
-                                with st.expander(f"{cat_emoji} **{sug.title}** {effort_badge}", expanded=expanded):
-                                    st.markdown(f"**Why it helps:** {sug.why_it_helps}")
+                                # Generate a single diagram for the entire suggestion
+                                if generate_diagrams and api_key:
+                                    col_diagram, col_steps = st.columns([1, 2])
                                     
-                                    # Generate a single diagram for the entire suggestion
-                                    if generate_diagrams and api_key:
-                                        col_diagram, col_steps = st.columns([1, 2])
-                                        
-                                        with col_diagram:
-                                            with st.spinner("🎨 Generating diagram..."):
-                                                # Convert steps list to tuple for caching
-                                                diagram_url, diagram_error = generate_suggestion_diagram(
-                                                    tuple(sug.steps), 
-                                                    api_key
-                                                )
-                                                if diagram_url:
-                                                    st.image(diagram_url, use_container_width=True)
-                                                else:
-                                                    st.markdown(f"<div style='text-align:center;font-size:64px;padding:40px;background:#f0f0f0;border-radius:12px;'>{cat_emoji}</div>", unsafe_allow_html=True)
-                                                    if diagram_error:
-                                                        st.error(f"Diagram error: {diagram_error}")
-                                        
-                                        with col_steps:
-                                            st.markdown("**Steps:**")
-                                            for step_num, step in enumerate(sug.steps, 1):
-                                                st.markdown(f"{step_num}. {step}")
-                                    else:
+                                    with col_diagram:
+                                        with st.spinner("🎨 Generating diagram..."):
+                                            # Convert steps list to tuple for caching
+                                            diagram_url, diagram_error = generate_suggestion_diagram(
+                                                tuple(sug.steps), 
+                                                api_key
+                                            )
+                                            if diagram_url:
+                                                st.image(diagram_url, use_container_width=True)
+                                            else:
+                                                st.markdown(f"<div style='text-align:center;font-size:64px;padding:40px;background:#f0f0f0;border-radius:12px;'>{cat_emoji}</div>", unsafe_allow_html=True)
+                                                if diagram_error:
+                                                    st.error(f"Diagram error: {diagram_error}")
+                                    
+                                    with col_steps:
                                         st.markdown("**Steps:**")
                                         for step_num, step in enumerate(sug.steps, 1):
                                             st.markdown(f"{step_num}. {step}")
-                                    
-                                    if sug.expected_score_lift:
-                                        lift_parts = []
-                                        for dim, lift in sug.expected_score_lift.items():
-                                            dim_display = dim.replace("_", " ").title()
-                                            lift_parts.append(f"{dim_display}: +{int(lift * 100)}%")
-                                        st.caption(f"📈 Expected improvement: {', '.join(lift_parts)}")
-                                    
-                                    st.caption(f"Effort: {sug.effort.title()}")
-                                    
-                                    # Show Amazon links for paid suggestions
-                                    if show_amazon_links and sug.amazon_links:
-                                        st.markdown("**🛒 Shop on Amazon:**")
-                                        link_cols = st.columns(min(len(sug.amazon_links), 3))
-                                        for idx, link in enumerate(sug.amazon_links[:3]):
-                                            with link_cols[idx]:
-                                                st.link_button(f"🔗 {link.label}", link.url, use_container_width=True)
-                            
-                            with tab_free:
-                                if free_suggestions:
-                                    for i, sug in enumerate(free_suggestions):
-                                        render_suggestion(
-                                            sug, 
-                                            expanded=(i == 0),
-                                            generate_diagrams=generate_diagrams,
-                                            api_key=openai_api_key
-                                        )
                                 else:
-                                    st.info("No free suggestions available for this space.")
-                            
-                            with tab_paid:
-                                if paid_suggestions:
-                                    for i, sug in enumerate(paid_suggestions):
-                                        render_suggestion(
-                                            sug, 
-                                            expanded=(i == 0), 
-                                            show_amazon_links=True,
-                                            generate_diagrams=generate_diagrams,
-                                            api_key=openai_api_key
-                                        )
-                                else:
-                                    st.info("No paid suggestions needed for this space.")
-                        else:
-                            st.success("🎉 This space already looks great for cats! No major improvements needed.")
-                            
-                    except Exception as e:
-                        st.warning(f"Could not generate suggestions: {e}")
-                            
-            except Exception as e:
-                st.error(f"Error analyzing cat attractiveness: {e}")
+                                    st.markdown("**Steps:**")
+                                    for step_num, step in enumerate(sug.steps, 1):
+                                        st.markdown(f"{step_num}. {step}")
+                                
+                                if sug.expected_score_lift:
+                                    lift_parts = []
+                                    for dim, lift in sug.expected_score_lift.items():
+                                        dim_display = dim.replace("_", " ").title()
+                                        lift_parts.append(f"{dim_display}: +{int(lift * 100)}%")
+                                    st.caption(f"📈 Expected improvement: {', '.join(lift_parts)}")
+                                
+                                st.caption(f"Effort: {sug.effort.title()}")
+                                
+                                # Show Amazon links for paid suggestions
+                                if show_amazon_links and sug.amazon_links:
+                                    st.markdown("**🛒 Shop on Amazon:**")
+                                    link_cols = st.columns(min(len(sug.amazon_links), 3))
+                                    for idx, link in enumerate(sug.amazon_links[:3]):
+                                        with link_cols[idx]:
+                                            st.link_button(f"🔗 {link.label}", link.url, use_container_width=True)
+                        
+                        with tab_free:
+                            if free_suggestions:
+                                for i, sug in enumerate(free_suggestions):
+                                    render_suggestion(
+                                        sug, 
+                                        expanded=(i == 0),
+                                        generate_diagrams=generate_diagrams,
+                                        api_key=openai_api_key
+                                    )
+                            else:
+                                st.info("No free suggestions available for this space.")
+                        
+                        with tab_paid:
+                            if paid_suggestions:
+                                for i, sug in enumerate(paid_suggestions):
+                                    render_suggestion(
+                                        sug, 
+                                        expanded=(i == 0), 
+                                        show_amazon_links=True,
+                                        generate_diagrams=generate_diagrams,
+                                        api_key=openai_api_key
+                                    )
+                            else:
+                                st.info("No paid suggestions needed for this space.")
+                    else:
+                        st.success(f"🎉 This space already looks great for {current_mode.lower()}s! No major improvements needed.")
+                        
+                except Exception as e:
+                    st.warning(f"Could not generate suggestions: {e}")
+                        
+        except Exception as e:
+            st.error(f"Error analyzing {current_mode.lower()} attractiveness: {e}")
 
     # --- DOWNLOADS ---
     st.write("---")
