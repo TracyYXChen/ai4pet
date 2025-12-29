@@ -46,6 +46,44 @@ def load_config():
         return {}
 
 
+# 4. Generate suggestion diagram using DALL-E (cached)
+# Increment DIAGRAM_PROMPT_VERSION when you change the prompt to bust the cache
+DIAGRAM_PROMPT_VERSION = 2
+
+def generate_suggestion_diagram(steps: tuple, openai_api_key: str, _version: int = DIAGRAM_PROMPT_VERSION) -> tuple[Optional[str], Optional[str]]:
+    """
+    Generate a single illustrated diagram for an entire suggestion using DALL-E.
+    Returns a tuple of (image_url, error_message). If successful, error is None.
+    """
+    try:
+        from openai import OpenAI
+        
+        if not openai_api_key:
+            return None, "No OpenAI API key configured"
+        
+        client = OpenAI(api_key=openai_api_key)
+        
+        # Combine steps into a summary
+        steps_summary = " → ".join([f"{s}" for s in steps])
+        
+        # Create a prompt for a single comprehensive diagram
+        prompt = (
+            f"You are a skilled illustrator and your task is to help users follow steps to improve the attractiveness of a room for cats. Create a detailed diagram based on the following steps: {steps_summary}. The diagram should be a single image that shows the entire suggestion."
+        )
+        
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="standard",
+            n=1,
+        )
+        
+        return response.data[0].url, None
+    except Exception as e:
+        return None, str(e)
+
+
 # Category colors for bounding box visualization (BGR format for OpenCV)
 CATEGORY_COLORS = {
     "vertical": (255, 165, 0),    # Orange
@@ -634,6 +672,13 @@ if uploaded_file is not None:
                 st.write("### 5. 💡 Room Improvement Suggestions")
                 st.caption("Tenant-friendly tips to make this space more cat-attractive.")
                 
+                # Toggle for illustrated diagrams
+                generate_diagrams = st.checkbox(
+                    "🎨 Generate illustrated diagrams for each step",
+                    value=False,
+                    help="Uses AI to create simple visual diagrams for each step. May take a few seconds per step."
+                )
+                
                 with st.spinner("🤔 Generating personalized suggestions..."):
                     try:
                         config = load_config()
@@ -654,7 +699,7 @@ if uploaded_file is not None:
                             
                             tab_free, tab_paid = st.tabs(["🆓 Free", "💵 Paid"])
                             
-                            def render_suggestion(sug, expanded=False, show_amazon_links=False):
+                            def render_suggestion(sug, expanded=False, show_amazon_links=False, generate_diagrams=False, api_key=None):
                                 """Render a single suggestion in an expander."""
                                 cat_emoji = {
                                     "vertical": "🧗",
@@ -667,9 +712,33 @@ if uploaded_file is not None:
                                 
                                 with st.expander(f"{cat_emoji} **{sug.title}** {effort_badge}", expanded=expanded):
                                     st.markdown(f"**Why it helps:** {sug.why_it_helps}")
-                                    st.markdown("**Steps:**")
-                                    for step_num, step in enumerate(sug.steps, 1):
-                                        st.markdown(f"{step_num}. {step}")
+                                    
+                                    # Generate a single diagram for the entire suggestion
+                                    if generate_diagrams and api_key:
+                                        col_diagram, col_steps = st.columns([1, 2])
+                                        
+                                        with col_diagram:
+                                            with st.spinner("🎨 Generating diagram..."):
+                                                # Convert steps list to tuple for caching
+                                                diagram_url, diagram_error = generate_suggestion_diagram(
+                                                    tuple(sug.steps), 
+                                                    api_key
+                                                )
+                                                if diagram_url:
+                                                    st.image(diagram_url, use_container_width=True)
+                                                else:
+                                                    st.markdown(f"<div style='text-align:center;font-size:64px;padding:40px;background:#f0f0f0;border-radius:12px;'>{cat_emoji}</div>", unsafe_allow_html=True)
+                                                    if diagram_error:
+                                                        st.error(f"Diagram error: {diagram_error}")
+                                        
+                                        with col_steps:
+                                            st.markdown("**Steps:**")
+                                            for step_num, step in enumerate(sug.steps, 1):
+                                                st.markdown(f"{step_num}. {step}")
+                                    else:
+                                        st.markdown("**Steps:**")
+                                        for step_num, step in enumerate(sug.steps, 1):
+                                            st.markdown(f"{step_num}. {step}")
                                     
                                     if sug.expected_score_lift:
                                         lift_parts = []
@@ -691,14 +760,25 @@ if uploaded_file is not None:
                             with tab_free:
                                 if free_suggestions:
                                     for i, sug in enumerate(free_suggestions):
-                                        render_suggestion(sug, expanded=(i == 0))
+                                        render_suggestion(
+                                            sug, 
+                                            expanded=(i == 0),
+                                            generate_diagrams=generate_diagrams,
+                                            api_key=openai_api_key
+                                        )
                                 else:
                                     st.info("No free suggestions available for this space.")
                             
                             with tab_paid:
                                 if paid_suggestions:
                                     for i, sug in enumerate(paid_suggestions):
-                                        render_suggestion(sug, expanded=(i == 0), show_amazon_links=True)
+                                        render_suggestion(
+                                            sug, 
+                                            expanded=(i == 0), 
+                                            show_amazon_links=True,
+                                            generate_diagrams=generate_diagrams,
+                                            api_key=openai_api_key
+                                        )
                                 else:
                                     st.info("No paid suggestions needed for this space.")
                         else:
