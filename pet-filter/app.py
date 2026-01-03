@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import io
 import yaml
+import os
 from PIL import Image
 
 from transformers import pipeline
@@ -31,17 +32,23 @@ import os
 # 1. Load the AI Depth Model (Cached for speed)
 @st.cache_resource
 def load_depth_model():
-    # 'depth-anything' is excellent, but 'vincent-cl/monodepth2-visdrone-v2' 
-    # or the standard DPT are lighter. Let's use a standard robust one:
-    pipe = pipeline(task="depth-estimation", model="LiheYoung/depth-anything-small-hf")
+    # Adding device=0 or device_map="auto" usually triggers the need for accelerate.
+    # On Streamlit Cloud (CPU), the safest way is explicitly setting device="cpu".
+    pipe = pipeline(
+        task="depth-estimation", 
+        model="LiheYoung/depth-anything-small-hf", 
+        device="cpu"
+    )
     return pipe
 
 
 # 2. Load the Object Detection Model (Cached for speed)
 @st.cache_resource
-def load_detector_model(weights: str = "yolov8n.pt"):
-    """Load and cache the object detection model for cat attractiveness scoring."""
-    return YOLO(weights)
+def load_detector_model():
+    # Load model and immediately put it in evaluation mode to save memory
+    model = YOLO("yolov8n.pt")
+    return model
+
 
 
 # 3. Load config for API keys
@@ -350,41 +357,48 @@ def apply_pet_perspective_warp(image_rgb, depth_map, mode="Cat", strength=1.0):
 # pet_inerest,a Spectral Residual approach—a standard computer vision technique to find "surprising" or "novel" parts of an image that grab attention.
 def analyze_pet_interest(img_bgr, mode="Cat"):
     """
-    Analyzes visual interest using a robust fallback if cv2.saliency fails.
+    Analyzes visual interest with species-specific biases:
+    - Cat: Bias toward the upper half (looking up) and center-vertical (depth).
+    - Dog: Bias toward a wide horizontal band (left/right).
+    - Human: Bias toward the golden ratio intersections.
     """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    
-    # Try to use the specialized module
-    if hasattr(cv2, 'saliency'):
-        try:
-            saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
-            success, saliency_map = saliency.computeSaliency(gray)
-            saliency_map = (saliency_map * 255).astype("uint8")
-        except:
-            # Fallback to manual saliency calculation
-            saliency_map = cv2.GaussianBlur(gray, (5, 5), 0)
-            saliency_map = cv2.absdiff(gray, saliency_map)
-    else:
-        # MANUAL SALIENCY: Detects high-contrast areas/edges
-        # This simulates interest based on visual complexity
-        grad_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
-        saliency_map = cv2.convertScaleAbs(cv2.addWeighted(cv2.absdiff(grad_x, 0), 0.5, cv2.absdiff(grad_y, 0), 0.5, 0))
+    h, w = gray.shape
 
-    # Apply Species-Specific Weighting
-    h, w = saliency_map.shape
-    y_indices, _ = np.indices((h, w))
-    
-    # Weighting logic (Cats look up, Dogs look down)
+    # 1. Base Saliency (Edges/Contrast)
+    grad_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
+    saliency_map = cv2.convertScaleAbs(cv2.addWeighted(cv2.absdiff(grad_x, 0), 0.5, cv2.absdiff(grad_y, 0), 0.5, 0))
+
+    # 2. Create Biological Bias Masks
+    y_idx, x_idx = np.indices((h, w))
+    weight_mask = np.ones((h, w), dtype=np.float32)
+
     if mode == "Cat":
-        weight_mask = np.clip(1.3 - (y_indices / h), 0.5, 1.5)
-    else:
-        weight_mask = np.clip(0.5 + (y_indices / h), 0.5, 1.5)
-        
-    weighted_saliency = (saliency_map * weight_mask).astype(np.uint8)
+        # Bias: Top of image (looking up) + center-vertical (depth)
+        vertical_bias = np.clip(1.5 - (y_idx / (h * 0.5)), 0.5, 2.0)
+        depth_bias = np.exp(-((x_idx - w/2)**2) / (2 * (w/4)**2))
+        weight_mask = vertical_bias * depth_bias
+
+    elif mode == "Dog":
+        # Bias: Middle horizontal band (scanning left and right)
+        horizontal_band = np.exp(-((y_idx - h/1.8)**2) / (2 * (h/4)**2))
+        weight_mask = horizontal_band * 1.5
+
+    else: # Human (Standard/Golden Ratio)
+        # Bias: Golden Ratio point (~0.618)
+        phi = 0.618
+        golden_y, golden_x = int(h * (1 - phi)), int(w * phi)
+        weight_mask = np.exp(-((y_idx - golden_y)**2 + (x_idx - golden_x)**2) / (2 * (w/6)**2))
+        weight_mask = np.clip(weight_mask * 2.0, 0.8, 2.0)
+
+    # 3. Combine Saliency with Biological Bias
+    weighted_saliency = (saliency_map.astype(np.float32) * weight_mask)
+    weighted_saliency = cv2.normalize(weighted_saliency, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
     heatmap = cv2.applyColorMap(weighted_saliency, cv2.COLORMAP_JET)
     _, _, _, max_loc = cv2.minMaxLoc(weighted_saliency)
-    
+
     return heatmap, max_loc
 
 st.set_page_config(page_title="Pet Vision Filters", layout="wide")
@@ -522,28 +536,75 @@ def apply_pet_filter_to_image(img_bgr: np.ndarray, params: dict) -> np.ndarray:
     out_bgr = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
     return out_bgr
 
-st.subheader("Upload an Image")
+# --- INITIALIZE SESSION STATE ---
+if 'selected_sample' not in st.session_state:
+    st.session_state['selected_sample'] = None
+
+st.markdown("### 🖼️ Step 1: Choose or Upload an Image")
+
+# --- CLICKABLE GALLERY ---
+st.write("##### Quick Select Samples")
+# FIXED: Changed .png to match your files in the samples/ folder
+samples = {
+    "Sample 1": "samples/sample1.png",
+    "Sample 2": "samples/sample2.png",
+}
+
+cols = st.columns(4)
+for i, (name, path) in enumerate(samples.items()):
+    with cols[i]:
+        if os.path.exists(path):
+            st.image(path, use_container_width=True)
+            if st.button(f"Select {i+1}", key=f"btn_{i}"):
+                st.session_state['selected_sample'] = path
+                # Use a dummy key to reset the file uploader if a sample is picked
+                st.session_state['uploader_key'] = np.random.randint(1, 1000) 
+        else:
+            # Displays if file extension or path is wrong
+            st.error(f"Path error: {path}")
+
+st.write("---")
+
+# --- UPLOAD OPTION ---
+st.write("##### Or Upload Your Own")
 uploaded_file = st.file_uploader(
-    "Choose an image file",
-    type=["jpg", "jpeg", "png", "webp", "bmp"],
-    help="Upload an image to apply the pet vision filter"
+    "Drag and drop file here", 
+    type=["jpg", "jpeg", "png"],
+    key=st.session_state.get('uploader_key', 'user_upload')
 )
 
+# --- LOGIC TO DETERMINE WHICH IMAGE TO USE ---
+input_image = None
+
 if uploaded_file is not None:
-    # Load image (PIL = RGB)
-    pil_image = Image.open(uploaded_file).convert("RGB")
+    input_image = Image.open(uploaded_file)
+    st.session_state['selected_sample'] = None 
+elif st.session_state['selected_sample'] is not None:
+    input_image = Image.open(st.session_state['selected_sample'])
+
+# --- MAIN PROCESSING BLOCK ---
+# Wrap EVERYTHING in this if-statement to prevent NameErrors
+if input_image:
+    st.info("✅ Image selected successfully!")
+    
+    # 1. Prepare images for OpenCV
+    pil_image = input_image.convert("RGB")
     img_rgb = np.array(pil_image)
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
     
-    # Get current params
+    # 2. Get current params
     params = st.session_state.get("vision_params", {})
 
-    # --- PROCESSING ---
+    # --- SIMULATION STEPS ---
     
-    # 1. Biological Vision Simulation (Retinal only)
-    # Apply color/blur filter to original BGR image
+    # Biological Vision Simulation
+    # Now img_bgr is guaranteed to exist because we are inside the 'if input_image' block
     bio_bgr = apply_pet_filter_to_image(img_bgr, params)
     bio_rgb = cv2.cvtColor(bio_bgr, cv2.COLOR_BGR2RGB)
+
+    # --- IMPORTANT: Indent all your remaining code (Depth, Warp, Display) ---
+    # From here, indent all your remaining lines until the end of the file 
+    # so they only run when 'input_image' is present.
 
     # Prepare for Geometric/Combined
     # We need the depth model for Approach 1
@@ -569,15 +630,22 @@ if uploaded_file is not None:
             geo_bgr = cv2.cvtColor(geo_rgb, cv2.COLOR_RGB2BGR)
             combined_bgr = apply_pet_filter_to_image(geo_bgr, params)
             combined_rgb = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
+            
+            # --- 4. Interest Analysis ---
+            # 1. Find where the PET is looking (Cat or Dog bias) for the Heatmap
+            interest_heatmap_bgr, pet_peak_loc = analyze_pet_interest(img_bgr, mode=params["mode"])
 
-            # --- NEW: 4. Interest Analysis ---
-            interest_heatmap_bgr, peak_loc = analyze_pet_interest(combined_bgr, mode=params["mode"])
+            # 2. Find where a HUMAN is looking (Golden Ratio bias) for the comparison
+            _, human_peak_loc = analyze_pet_interest(img_bgr, mode="Human")
+
+            # Prepare heatmap for display
             interest_heatmap_rgb = cv2.cvtColor(interest_heatmap_bgr, cv2.COLOR_BGR2RGB)
-
-            # Create an overlay (Heatmap on top of filtered image)
+            
+            # Create the overlay (Heatmap on top of filtered image)
             overlay_img = cv2.addWeighted(combined_rgb, 0.6, interest_heatmap_rgb, 0.4, 0)
-            # Draw a target circle on the peak interest point
-            cv2.circle(overlay_img, peak_loc, 20, (255, 255, 255), 3)
+            
+            # Draw a target circle on the PET's specific peak interest point
+            cv2.circle(overlay_img, pet_peak_loc, 20, (255, 255, 255), 3)
 
         except Exception as e:
             st.error(f"Error loading AI model: {e}")
@@ -592,7 +660,7 @@ if uploaded_file is not None:
     
     with top_col1:
         st.subheader("Human Reality")
-        st.image(pil_image, use_container_width=True)
+        st.image(pil_image, width="stretch")
         st.info("**Human Body + Human Eyes**\n\nStandard standing height (approx. 1.7m) with trichromatic (3-color) sharp vision.")
 
     # Dynamic Text Variables
@@ -604,7 +672,7 @@ if uploaded_file is not None:
 
     with top_col2:
         st.subheader(f"{current_mode} Reality")
-        st.image(combined_rgb, use_container_width=True)
+        st.image(combined_rgb, width="stretch")
         st.success(f"**{current_mode} Body + {current_mode} Eyes**\n\n{body_desc}")
 
     st.write("---")
@@ -616,7 +684,7 @@ if uploaded_file is not None:
 
     with bot_col1:
         st.markdown("#### Factor A: Biology (The Eyes)")
-        st.image(bio_rgb, use_container_width=True)
+        st.image(bio_rgb, width="stretch")
         st.warning(
             "**Retinal Processing Only**\n\n"
             "Even if a cat stood as tall as a human, the world would look like this. "
@@ -626,7 +694,7 @@ if uploaded_file is not None:
         
     with bot_col2:
         st.markdown("#### Factor B: Physics (The Body)")
-        st.image(geo_rgb, use_container_width=True)
+        st.image(geo_rgb, width="stretch")
         st.warning(
             "**Physical Perspective Only**\n\n"
             f"If a human crawled at {current_mode} height, the world would look like this. "
@@ -641,19 +709,33 @@ if uploaded_file is not None:
     col_int1, col_int2 = st.columns(2)
 
     with col_int1:
-        st.image(overlay_img, use_container_width=True)
+        st.image(overlay_img, width="stretch")
         st.info("**Attention Heatmap**\n\nBright red zones indicate high visual 'weight' based on contrast, shape, and height.")
-
+    
+    
     with col_int2:
-        # Crop a small square around the peak interest point
-        x, y = peak_loc
-        # Ensure crop stays within image bounds
-        x1, x2 = max(0, x-75), min(img_rgb.shape[1], x+75)
-        y1, y2 = max(0, y-75), min(img_rgb.shape[0], y+75)
-        crop = img_rgb[y1:y2, x1:x2]
+        # HUMAN CROP (using Golden Ratio point)
+        hx, hy = human_peak_loc
+        hx1, hx2 = max(0, hx-75), min(img_rgb.shape[1], hx+75)
+        hy1, hy2 = max(0, hy-75), min(img_rgb.shape[0], hy+75)
+        human_crop = img_rgb[hy1:hy2, hx1:hx2]
 
-        st.image(crop, caption="Primary Object of Interest (Human View)")
-        st.warning(f"**Analysis:** Based on {current_mode} biology, this object is the most likely to grab their attention first.")
+        # PET CROP (using Biological Bias point)
+        px, py = pet_peak_loc
+        px1, px2 = max(0, px-75), min(img_rgb.shape[1], px+75)
+        py1, py2 = max(0, py-75), min(img_rgb.shape[0], py+75)
+
+        pet_crop_sharp = img_rgb[py1:py2, px1:px2]
+        
+
+        # 3. Display side-by-side comparison
+        sub_col1, sub_col2 = st.columns(2)
+        with sub_col1:
+            st.image(human_crop, caption="Primary Object (Human Focus)", use_container_width=True)
+        with sub_col2:
+            st.image(pet_crop_sharp, caption=f"Primary Object ({current_mode} Focus - Sharp View)", use_container_width=True)
+
+        st.warning(f"**Analysis:** This clear segment shows exactly what is at the {current_mode.lower()}'s peak interest point. This object is the most likely to grab a {current_mode.lower()}'s attention first.")
 
     # ROW 4: Pet Attractiveness Scoring
     st.write("---")
@@ -736,7 +818,7 @@ if uploaded_file is not None:
                 
                 # Draw bounding boxes on original image
                 annotated_img = draw_detections_on_image(img_rgb, detections, category_names)
-                st.image(annotated_img, use_container_width=True)
+                st.image(annotated_img, width="stretch")
                 
                 # Legend for categories based on pet type
                 if current_mode == "Cat":
@@ -839,7 +921,7 @@ if uploaded_file is not None:
                                                 api_key
                                             )
                                             if diagram_url:
-                                                st.image(diagram_url, use_container_width=True)
+                                                st.image(diagram_url, width="stretch")
                                             else:
                                                 st.markdown(f"<div style='text-align:center;font-size:64px;padding:40px;background:#f0f0f0;border-radius:12px;'>{cat_emoji}</div>", unsafe_allow_html=True)
                                                 if diagram_error:
@@ -869,7 +951,7 @@ if uploaded_file is not None:
                                     link_cols = st.columns(min(len(sug.amazon_links), 3))
                                     for idx, link in enumerate(sug.amazon_links[:3]):
                                         with link_cols[idx]:
-                                            st.link_button(f"🔗 {link.label}", link.url, use_container_width=True)
+                                            st.link_button(f"🔗 {link.label}", link.url, width="stretch")
                         
                         with tab_free:
                             if free_suggestions:
@@ -925,5 +1007,33 @@ if uploaded_file is not None:
     with d_col4:
         st.download_button("⬇️ Cat (Complete)", create_download(combined_rgb), "cat_complete.png", "image/png")
 
-else:
-    st.info("👆 Upload an image above to see the 3-stage simulation!")
+# ... (End of your existing processing block)
+
+    # --- NEW STEP 6: INSIDE THE CONDITIONAL BLOCK ---
+    st.write("---")
+    st.header("📸 Step 6: Custom Your Pet Analysis")
+ 
+    # --- REVISED STEP 6 IN app.py ---
+    uploaded_pet = st.file_uploader(
+        "Upload your cat's or dog's photo for AI analysis. You can see the real world in your pet's eyes!", 
+        type=['png', 'jpg'], 
+        key="pet_analysis_uploader"
+    )
+
+    # CRITICAL FIX: Only execute this block if a file is actually present
+    if uploaded_pet is not None:
+        # 1. Clear the old analysis text if a new image is detected
+        if 'pet_analysis_summary' in st.session_state:
+            del st.session_state['pet_analysis_summary']
+        if 'pet_species' in st.session_state:
+            del st.session_state['pet_species']
+
+        # 2. Save the NEW image to session state
+        st.session_state['pet_image'] = Image.open(uploaded_pet)
+        
+        # 3. Only show the button if an image is ready
+        if st.button("Analyze My Pet! 🐾", key="btn_to_analysis"):
+            st.switch_page("pages/pet_analysis.py")
+    else:
+        # Optional: Show a message when no file is uploaded
+        st.info("Please upload a pet photo to proceed to AI analysis.")
