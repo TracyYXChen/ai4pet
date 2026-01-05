@@ -785,34 +785,369 @@ if input_image:
             )
             st.caption(score_msg)
             
+            # Helper function to generate explanations for cat scores
+            def explain_cat_score(dimension: str, score: float, debug_info: Dict[str, Any], detections: List[Any]) -> str:
+                """Generate explanation string for a cat attractiveness score dimension."""
+                if dimension == "vertical_opportunity":
+                    vertical_detections = [d for d in detections if d.category == "vertical"]
+                    vertical_area = debug_info.get("vertical_area", 0)
+                    vertical_ratio = debug_info.get("vertical_ratio", 0)
+                    edge_energy = debug_info.get("edge_energy", 0)
+                    
+                    parts = []
+                    if vertical_detections:
+                        obj_names = [d.class_name for d in vertical_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(vertical_area * 100)
+                        parts.append(f"we detected {obj_list}, which occupies {area_pct}% of the image area")
+                    
+                    # Visual features contribute 65% of the score
+                    if vertical_ratio > 1.2 or edge_energy > 0.05:
+                        parts.append("the scene has strong vertical edge patterns and lines")
+                    
+                    if parts:
+                        return f"This measures climbing & perching opportunities. Cats love vertical structures. The score combines detected objects (35%) and visual features (65%). In this image, {', and '.join(parts)}."
+                    else:
+                        return "This measures climbing & perching opportunities. Cats love vertical structures. The score combines detected objects (35%) and visual features (65%). We didn't detect vertical objects, and the scene has minimal vertical edge patterns."
+                
+                elif dimension == "shelter_hiding":
+                    shelter_detections = [d for d in detections if d.category == "shelter"]
+                    shelter_area = debug_info.get("shelter_area", 0)
+                    nook_count = debug_info.get("nook_count", 0)
+                    nook_area = debug_info.get("nook_area_sum", 0)
+                    
+                    parts = []
+                    if shelter_detections:
+                        obj_names = [d.class_name for d in shelter_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(shelter_area * 100)
+                        parts.append(f"we detected {obj_list}, which occupies {area_pct}% of the image area")
+                    
+                    if nook_count > 0:
+                        nook_area_pct = int(nook_area * 100)
+                        parts.append(f"we found {nook_count} dark hiding nooks occupying {nook_area_pct}% of the image area")
+                    
+                    if parts:
+                        return f"This measures hiding spots & enclosed spaces. Cats need shelter and hiding spots. The score combines dark nooks (60%) and detected objects (40%). In this image, {', and '.join(parts)}."
+                    else:
+                        return "This measures hiding spots & enclosed spaces. Cats need shelter and hiding spots. The score combines dark nooks (60%) and detected objects (40%). We didn't detect many shelter objects or dark hiding nooks in this image."
+                
+                elif dimension == "cozy_warmth":
+                    cozy_detections = [d for d in detections if d.category == "cozy"]
+                    cozy_area = debug_info.get("cozy_area", 0)
+                    warmth = debug_info.get("warmth_mean_r_minus_b", 0)
+                    edge_energy = debug_info.get("edge_energy", 0)
+                    
+                    parts = []
+                    if cozy_detections:
+                        obj_names = [d.class_name for d in cozy_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(cozy_area * 100)
+                        parts.append(f"we detected {obj_list}, which occupies {area_pct}% of the image area")
+                    
+                    # Visual features: warmth and softness (low edge energy = soft)
+                    visual_parts = []
+                    if warmth > 0.05:
+                        visual_parts.append("warm color tones")
+                    elif warmth < -0.05:
+                        visual_parts.append("cool color tones")
+                    else:
+                        visual_parts.append("neutral color tones")
+                    
+                    if edge_energy < 0.08:
+                        visual_parts.append("soft textures (low edge energy)")
+                    
+                    if visual_parts:
+                        parts.append(f"the scene has {', and '.join(visual_parts)}")
+                    
+                    if parts:
+                        return f"This measures warm & comfortable areas. Cats seek cozy, warm areas. The score combines color/softness (60%) and detected objects (40%). In this image, {', and '.join(parts)}."
+                    else:
+                        return "This measures warm & comfortable areas. Cats seek cozy, warm areas. The score combines color/softness (60%) and detected objects (40%). We didn't detect many cozy objects, and the scene has neutral tones."
+                
+                elif dimension == "exploration_richness":
+                    explore_detections = [d for d in detections if d.category == "exploration"]
+                    explore_area = debug_info.get("explore_area", 0)
+                    edge_density = debug_info.get("edge_density", 0)
+                    entropy = debug_info.get("entropy", 0)
+                    
+                    parts = []
+                    if explore_detections:
+                        obj_names = [d.class_name for d in explore_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(explore_area * 100)
+                        parts.append(f"we detected {obj_list}, which occupies {area_pct}% of the image area")
+                    
+                    # Visual complexity: moderate is best (not too simple, not too chaotic)
+                    # Optimal edge_density is around 0.11 (middle of 0.02-0.20 range)
+                    # Optimal entropy is around 3.5 (middle of 2.0-5.0 range)
+                    visual_parts = []
+                    if 0.08 <= edge_density <= 0.14 and 2.5 <= entropy <= 4.5:
+                        visual_parts.append("moderate visual complexity (good for exploration)")
+                    elif edge_density < 0.08 or entropy < 2.5:
+                        visual_parts.append("low visual complexity (too simple)")
+                    else:
+                        visual_parts.append("high visual complexity (may be overwhelming)")
+                    
+                    if visual_parts:
+                        parts.append(f"the scene has {visual_parts[0]}")
+                    
+                    if parts:
+                        return f"This measures interesting objects to investigate. Cats love to explore interesting objects. The score combines visual complexity (65%) and detected objects (35%). In this image, {', and '.join(parts)}."
+                    else:
+                        return "This measures interesting objects to investigate. Cats love to explore interesting objects. The score combines visual complexity (65%) and detected objects (35%). We didn't detect exploration items, and the scene has low visual complexity."
+                
+                elif dimension == "safety_low_threat":
+                    threat_detections = [d for d in detections if d.category == "threat"]
+                    threat_count = debug_info.get("threat_count", 0)
+                    threat_area = debug_info.get("threat_area", 0)
+                    brightness = debug_info.get("mean_brightness", 0.5)
+                    edge_density = debug_info.get("edge_density", 0)
+                    
+                    parts = []
+                    if threat_detections:
+                        obj_names = [d.class_name for d in threat_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(threat_area * 100)
+                        parts.append(f"we detected {obj_list} (potential social complexity), which occupies {area_pct}% of the image area")
+                    else:
+                        parts.append("no threats detected")
+                    
+                    # Visual features: brightness (70%) + clutter (15%) + threats (15%)
+                    visual_parts = []
+                    if 0.35 <= brightness <= 0.75:
+                        visual_parts.append("comfortable brightness level")
+                    elif brightness < 0.35:
+                        visual_parts.append("somewhat dim lighting")
+                    else:
+                        visual_parts.append("very bright lighting")
+                    
+                    if edge_density < 0.15:
+                        visual_parts.append("low clutter")
+                    elif edge_density > 0.25:
+                        visual_parts.append("high clutter")
+                    
+                    if visual_parts:
+                        parts.append(f"the scene has {', and '.join(visual_parts)}")
+                    
+                    return f"This measures low threat level & security. Cats need safe, low-threat environments. The score combines brightness (70%), clutter (15%), and threats (15%). In this image, {', and '.join(parts)}."
+                
+                return ""
+            
+            # Helper function to generate explanations for dog scores
+            def explain_dog_score(dimension: str, score: float, debug_info: Dict[str, Any], detections: List[Any]) -> str:
+                """Generate explanation string for a dog attractiveness score dimension."""
+                if dimension == "floor_play_space":
+                    obstacle_detections = [d for d in detections if d.category == "floor"]
+                    obstacle_area = debug_info.get("obstacle_area", 0)
+                    edge_density = debug_info.get("edge_density", 0)
+                    
+                    parts = []
+                    if obstacle_detections:
+                        obj_names = [d.class_name for d in obstacle_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(obstacle_area * 100)
+                        parts.append(f"we detected {obj_list} as floor obstacles, which occupies {area_pct}% of the image area")
+                    else:
+                        parts.append("no major obstacles detected")
+                    
+                    # Visual features: clutter (edge_density)
+                    if edge_density < 0.15:
+                        parts.append("the floor is relatively clear (low clutter)")
+                    elif edge_density > 0.25:
+                        parts.append("the floor is cluttered (high edge density)")
+                    else:
+                        parts.append("the floor has moderate clutter")
+                    
+                    return f"This measures open floor space for play. Dogs need open floor space for play. The score combines clutter (60%) and obstacles (40%). In this image, {', and '.join(parts)}."
+                
+                elif dimension == "rest_cozy":
+                    rest_detections = [d for d in detections if d.category == "rest"]
+                    rest_area = debug_info.get("rest_area", 0)
+                    warmth = debug_info.get("warmth_mean_r_minus_b", 0)
+                    edge_energy = debug_info.get("edge_energy", 0)
+                    
+                    parts = []
+                    if rest_detections:
+                        obj_names = [d.class_name for d in rest_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(rest_area * 100)
+                        parts.append(f"we detected {obj_list}, which occupies {area_pct}% of the image area")
+                    
+                    # Visual features: warmth and softness
+                    visual_parts = []
+                    if warmth > 0.05:
+                        visual_parts.append("warm color tones")
+                    elif warmth < -0.05:
+                        visual_parts.append("cool color tones")
+                    else:
+                        visual_parts.append("neutral color tones")
+                    
+                    if edge_energy < 0.08:
+                        visual_parts.append("soft textures (low edge energy)")
+                    
+                    if visual_parts:
+                        parts.append(f"the scene has {', and '.join(visual_parts)}")
+                    
+                    if parts:
+                        return f"This measures comfortable resting spots. Dogs need comfortable resting spots. The score combines color/softness (60%) and detected objects (40%). In this image, {', and '.join(parts)}."
+                    else:
+                        return "This measures comfortable resting spots. Dogs need comfortable resting spots. The score combines color/softness (60%) and detected objects (40%). We didn't detect many rest surfaces, and the scene has neutral tones."
+                
+                elif dimension == "sniff_enrichment":
+                    sniff_detections = [d for d in detections if d.category == "sniff"]
+                    sniff_area = debug_info.get("sniff_area", 0)
+                    edge_density = debug_info.get("edge_density", 0)
+                    entropy = debug_info.get("entropy", 0)
+                    
+                    parts = []
+                    if sniff_detections:
+                        obj_names = [d.class_name for d in sniff_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(sniff_area * 100)
+                        parts.append(f"we detected {obj_list}, which occupies {area_pct}% of the image area")
+                    
+                    # Visual complexity: moderate is best
+                    visual_parts = []
+                    if 0.08 <= edge_density <= 0.18 and 2.5 <= entropy <= 4.5:
+                        visual_parts.append("moderate visual complexity (good for exploration)")
+                    elif edge_density < 0.08 or entropy < 2.5:
+                        visual_parts.append("low visual complexity (too simple)")
+                    else:
+                        visual_parts.append("high visual complexity (may be overwhelming)")
+                    
+                    if visual_parts:
+                        parts.append(f"the scene has {visual_parts[0]}")
+                    
+                    if parts:
+                        return f"This measures sniffing & enrichment opportunities. Dogs love to sniff and explore interesting objects. The score combines visual complexity (60%) and detected objects (40%). In this image, {', and '.join(parts)}."
+                    else:
+                        return "This measures sniffing & enrichment opportunities. Dogs love to sniff and explore interesting objects. The score combines visual complexity (60%) and detected objects (40%). We didn't detect enrichment items, and the scene has low visual complexity."
+                
+                elif dimension == "water_food_ready":
+                    water_food_detections = [d for d in detections if d.category == "water_food"]
+                    water_food_area = debug_info.get("water_food_area", 0)
+                    counts = debug_info.get("counts", {})
+                    bottle_count = counts.get("bottle", 0)
+                    cup_count = counts.get("cup", 0)
+                    
+                    parts = []
+                    if water_food_detections:
+                        obj_names = [d.class_name for d in water_food_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(water_food_area * 100)
+                        parts.append(f"we detected {obj_list}, which occupies {area_pct}% of the image area")
+                    
+                    if (bottle_count + cup_count) > 0:
+                        parts.append(f"we found {bottle_count + cup_count} drink container{'s' if (bottle_count + cup_count) > 1 else ''}")
+                    
+                    if parts:
+                        return f"This measures water & food accessibility. Dogs need easy access to water and food. The score combines detected objects (60%) and drink containers (40%). In this image, {', and '.join(parts)}."
+                    else:
+                        return "This measures water & food accessibility. Dogs need easy access to water and food. The score combines detected objects (60%) and drink containers (40%). We didn't detect many food/water-related objects in this image."
+                
+                elif dimension == "safety_low_threat":
+                    threat_detections = [d for d in detections if d.category == "threat"]
+                    threat_count = debug_info.get("threat_count", 0)
+                    threat_area = debug_info.get("threat_area", 0)
+                    brightness = debug_info.get("mean_brightness", 0.5)
+                    edge_density = debug_info.get("edge_density", 0)
+                    
+                    parts = []
+                    if threat_detections:
+                        obj_names = [d.class_name for d in threat_detections]
+                        obj_counts = {}
+                        for name in obj_names:
+                            obj_counts[name] = obj_counts.get(name, 0) + 1
+                        obj_list = ", ".join([f"{k} ({v})" if v > 1 else k for k, v in obj_counts.items()])
+                        area_pct = int(threat_area * 100)
+                        parts.append(f"we detected {obj_list} (potential social complexity), which occupies {area_pct}% of the image area")
+                    else:
+                        parts.append("no threats detected")
+                    
+                    # Visual features: brightness (60%) + clutter (25%) + threats (15%)
+                    visual_parts = []
+                    if 0.35 <= brightness <= 0.75:
+                        visual_parts.append("comfortable brightness level")
+                    elif brightness < 0.35:
+                        visual_parts.append("somewhat dim lighting")
+                    else:
+                        visual_parts.append("very bright lighting")
+                    
+                    if edge_density < 0.15:
+                        visual_parts.append("low clutter")
+                    elif edge_density > 0.25:
+                        visual_parts.append("high clutter")
+                    
+                    if visual_parts:
+                        parts.append(f"the scene has {', and '.join(visual_parts)}")
+                    
+                    return f"This measures low threat level & security. Dogs need safe, low-threat environments. The score combines brightness (60%), clutter (25%), and threats (15%). In this image, {', and '.join(parts)}."
+                
+                return ""
+            
             # Display individual dimension scores based on pet type
             score_cols = st.columns(5)
             
             if current_mode == "Cat":
                 dimensions = [
-                    ("🧗 Vertical", pet_scores.vertical_opportunity, "Climbing & perching opportunities"),
-                    ("🏠 Shelter", pet_scores.shelter_hiding, "Hiding spots & enclosed spaces"),
-                    ("☀️ Cozy", pet_scores.cozy_warmth, "Warm & comfortable areas"),
-                    ("🎯 Explore", pet_scores.exploration_richness, "Interesting objects to investigate"),
-                    ("🛡️ Safety", pet_scores.safety_low_threat, "Low threat level & security"),
+                    ("🧗 Vertical", pet_scores.vertical_opportunity, "Climbing & perching opportunities", "vertical_opportunity"),
+                    ("🏠 Shelter", pet_scores.shelter_hiding, "Hiding spots & enclosed spaces", "shelter_hiding"),
+                    ("☀️ Cozy", pet_scores.cozy_warmth, "Warm & comfortable areas", "cozy_warmth"),
+                    ("🎯 Explore", pet_scores.exploration_richness, "Interesting objects to investigate", "exploration_richness"),
+                    ("🛡️ Safety", pet_scores.safety_low_threat, "Low threat level & security", "safety_low_threat"),
                 ]
             else:  # Dog mode
                 dimensions = [
-                    ("🏃 Floor/Play", pet_scores.floor_play_space, "Open floor space for play"),
-                    ("🛋️ Rest", pet_scores.rest_cozy, "Comfortable resting spots"),
-                    ("👃 Sniff", pet_scores.sniff_enrichment, "Sniffing & enrichment opportunities"),
-                    ("🥣 Food/Water", pet_scores.water_food_ready, "Water & food accessibility"),
-                    ("🛡️ Safety", pet_scores.safety_low_threat, "Low threat level & security"),
+                    ("🏃 Floor/Play", pet_scores.floor_play_space, "Open floor space for play", "floor_play_space"),
+                    ("🛋️ Rest", pet_scores.rest_cozy, "Comfortable resting spots", "rest_cozy"),
+                    ("👃 Sniff", pet_scores.sniff_enrichment, "Sniffing & enrichment opportunities", "sniff_enrichment"),
+                    ("🥣 Food/Water", pet_scores.water_food_ready, "Water & food accessibility", "water_food_ready"),
+                    ("🛡️ Safety", pet_scores.safety_low_threat, "Low threat level & security", "safety_low_threat"),
                 ]
             
-            for col, (label, score, tooltip) in zip(score_cols, dimensions):
-                with col:
-                    pct = int(score * 100)
-                    st.metric(label=label, value=f"{pct}%", help=tooltip)
-            
-            # Show annotated image with bounding boxes and detected objects
             detections = debug_info.get("detections", []) if debug_info else []
             
+            for col, (label, score, tooltip, dimension_key) in zip(score_cols, dimensions):
+                with col:
+                    pct = int(score * 100)
+                    st.metric(label=label, value=f"{pct}%")
+                    # Generate and display explanation
+                    if current_mode == "Cat":
+                        explanation = explain_cat_score(dimension_key, score, debug_info, detections)
+                    else:
+                        explanation = explain_dog_score(dimension_key, score, debug_info, detections)
+                    if explanation:
+                        st.caption(explanation)
+            
+            # Show annotated image with bounding boxes and detected objects
             if detections:
                 st.write("#### Detected Objects")
                 
