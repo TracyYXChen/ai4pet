@@ -1420,94 +1420,9 @@ if input_image:
                     all_vulnerable_objects.extend(objects)
                 
                 if all_vulnerable_objects:
-                    # Draw bounding boxes on image for vulnerable objects
-                    vuln_img_rgb = img_rgb.copy()
-                    
-                    # Color mapping for risk types
-                    risk_colors = {
-                        "breakable": (255, 0, 0),      # Red
-                        "scratchable": (255, 165, 0),   # Orange
-                        "chewable": (255, 192, 203),   # Pink
-                        "toxic": (128, 0, 128),         # Purple
-                        "unstable": (255, 140, 0),      # Dark Orange
-                    }
-                    
-                    severity_colors = {
-                        "low": (0, 255, 0),      # Green
-                        "medium": (255, 165, 0), # Orange
-                        "high": (255, 0, 0),     # Red
-                    }
-                    
-                    # Only draw bounding boxes for objects that have them
-                    objects_with_bbox = [v for v in all_vulnerable_objects if v.bbox is not None]
-                    
-                    if objects_with_bbox:
-                        h, w = vuln_img_rgb.shape[:2]
-                        
-                        for vuln_obj in objects_with_bbox:
-                            # Convert normalized bbox to pixel coordinates
-                            x1_norm, y1_norm, x2_norm, y2_norm = vuln_obj.bbox
-                            x1 = int(x1_norm * w)
-                            y1 = int(y1_norm * h)
-                            x2 = int(x2_norm * w)
-                            y2 = int(y2_norm * h)
-                            
-                            # Get color based on severity (primary) and risk type (secondary)
-                            severity_color = severity_colors.get(vuln_obj.severity, (128, 128, 128))
-                            risk_color = risk_colors.get(vuln_obj.risk_type, (128, 128, 128))
-                            # Blend severity and risk colors
-                            color = tuple(int((s + r) / 2) for s, r in zip(severity_color, risk_color))
-                            
-                            # Draw bounding box
-                            cv2.rectangle(vuln_img_rgb, (x1, y1), (x2, y2), color, 3)
-                            
-                            # Prepare label
-                            severity_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(vuln_obj.severity, "⚪")
-                            risk_emoji = {
-                                "breakable": "💥",
-                                "scratchable": "🐾",
-                                "chewable": "🦷",
-                                "toxic": "☠️",
-                                "unstable": "⚖️",
-                            }.get(vuln_obj.risk_type, "⚠️")
-                            
-                            label = f"{risk_emoji} {severity_emoji} {vuln_obj.label}"
-                            
-                            # Calculate text size for background
-                            font = cv2.FONT_HERSHEY_SIMPLEX
-                            font_scale = 0.6
-                            thickness = 2
-                            (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-                            
-                            # Draw label background
-                            label_y = max(y1 - 5, text_h + 5)
-                            cv2.rectangle(
-                                vuln_img_rgb,
-                                (x1, label_y - text_h - 5),
-                                (x1 + text_w + 4, label_y + 2),
-                                color,
-                                -1  # Filled
-                            )
-                            
-                            # Draw text (white on colored background)
-                            cv2.putText(
-                                vuln_img_rgb,
-                                label,
-                                (x1 + 2, label_y - 2),
-                                font,
-                                font_scale,
-                                (255, 255, 255),  # White text
-                                thickness,
-                                cv2.LINE_AA
-                            )
-                        
-                        # Display annotated image
-                        st.image(vuln_img_rgb, width="stretch")
-                        st.caption("**Legend:** 🔴 High | 🟡 Medium | 🟢 Low severity | 💥 Breakable | 🐾 Scratchable | 🦷 Chewable | ☠️ Toxic | ⚖️ Unstable")
-                    else:
-                        # No bounding boxes available, just show the original image
-                        st.image(img_rgb, width="stretch")
-                        st.info("💡 Vulnerability analysis is based on image description. Items are listed below by risk type.")
+                    # Show the original image (no bounding boxes since we don't request them)
+                    st.image(img_rgb, width="stretch")
+                    st.info("💡 Vulnerability analysis is based on image description. Items are listed below by risk type.")
                     
                     # Display vulnerabilities by risk type (structured format)
                     risk_type_labels = {
@@ -1575,6 +1490,82 @@ if input_image:
                                     st.info(f"No {risk_type} vulnerabilities detected.")
                     else:
                         st.info("No vulnerabilities found in any category.")
+                    
+                    # Room Improvement Suggestions subsection
+                    st.write("---")
+                    st.write("#### 💡 Room Improvement Suggestions")
+                    st.caption(f"Tenant-friendly solutions to address the identified vulnerabilities and make this space safer for {current_mode.lower()}s.")
+                    
+                    # Aggregate all free and paid fixes from all vulnerabilities
+                    all_free_fixes: List[Tuple[str, str, str]] = []  # (risk_type, label, fix)
+                    all_paid_fixes: List[Tuple[str, str, str]] = []  # (risk_type, label, fix)
+                    
+                    for risk_type, objects in vulnerable_objects.items():
+                        for vuln_obj in objects:
+                            # Add free fixes
+                            for fix in vuln_obj.quick_fixes_free:
+                                all_free_fixes.append((risk_type, vuln_obj.label, fix))
+                            # Add paid fixes
+                            for fix in vuln_obj.quick_fixes_paid:
+                                all_paid_fixes.append((risk_type, vuln_obj.label, fix))
+                    
+                    # Display suggestions in tabs
+                    if all_free_fixes or all_paid_fixes:
+                        tab_free, tab_paid = st.tabs(["🆓 Free", "💵 Paid"])
+                        
+                        with tab_free:
+                            if all_free_fixes:
+                                # Group fixes by risk type
+                                fixes_by_risk: Dict[str, List[Tuple[str, str]]] = {}
+                                for risk_type, label, fix in all_free_fixes:
+                                    if risk_type not in fixes_by_risk:
+                                        fixes_by_risk[risk_type] = []
+                                    fixes_by_risk[risk_type].append((label, fix))
+                                
+                                risk_emoji_map = {
+                                    "breakable": "💥",
+                                    "scratchable": "🐾",
+                                    "chewable": "🦷",
+                                    "toxic": "☠️",
+                                    "unstable": "⚖️",
+                                }
+                                
+                                for risk_type, fixes in fixes_by_risk.items():
+                                    risk_emoji = risk_emoji_map.get(risk_type, "⚠️")
+                                    st.markdown(f"##### {risk_emoji} {risk_type.title()}")
+                                    for label, fix in fixes:
+                                        with st.expander(f"**{label}**", expanded=False):
+                                            st.markdown(fix)
+                            else:
+                                st.info("No free solutions available.")
+                        
+                        with tab_paid:
+                            if all_paid_fixes:
+                                # Group fixes by risk type
+                                fixes_by_risk: Dict[str, List[Tuple[str, str]]] = {}
+                                for risk_type, label, fix in all_paid_fixes:
+                                    if risk_type not in fixes_by_risk:
+                                        fixes_by_risk[risk_type] = []
+                                    fixes_by_risk[risk_type].append((label, fix))
+                                
+                                risk_emoji_map = {
+                                    "breakable": "💥",
+                                    "scratchable": "🐾",
+                                    "chewable": "🦷",
+                                    "toxic": "☠️",
+                                    "unstable": "⚖️",
+                                }
+                                
+                                for risk_type, fixes in fixes_by_risk.items():
+                                    risk_emoji = risk_emoji_map.get(risk_type, "⚠️")
+                                    st.markdown(f"##### {risk_emoji} {risk_type.title()}")
+                                    for label, fix in fixes:
+                                        with st.expander(f"**{label}**", expanded=False):
+                                            st.markdown(fix)
+                            else:
+                                st.info("No paid solutions needed.")
+                    else:
+                        st.info("No improvement suggestions available.")
                 else:
                     st.success(f"✅ No significant vulnerabilities detected! This space appears safe for {current_mode.lower()}s.")
                     

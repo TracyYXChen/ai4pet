@@ -16,7 +16,6 @@ class VulnerableObject:
     label: str
     risk_type: RiskType
     severity: Severity
-    bbox: Optional[Tuple[float, float, float, float]]  # Optional normalized (x1,y1,x2,y2) in [0..1]
     reasons: List[str]
     quick_fixes_free: List[str]
     quick_fixes_paid: List[str]
@@ -122,7 +121,12 @@ class PetVulnerabilityAnalyzer:
                 "- toxic: Poisonous items (toxic plants, cleaning chemicals, medications, certain foods, essential oils)",
                 "- unstable: Items that could fall or tip over (items on edges, wobbly furniture, items on high shelves, leaning objects, top-heavy items)",
                 "",
-                "For each item, provide: specific label, severity (low/medium/high), 2-3 reasons why it's a concern, and practical fixes.",
+                "For each item, return a JSON object with these exact fields:",
+                "  - label: specific name of the item (string)",
+                "  - severity: low, medium, or high (string)",
+                "  - reasons: 2-3 reasons why it's a concern (array of strings)",
+                "  - fixes_free: free/renter-friendly solutions (array of strings) - e.g., 'rearrange items', 'move to higher shelf', 'add small protective mat'",
+                "  - fixes_paid: paid solutions if needed (array of strings) - e.g., 'purchase protective covers', 'buy furniture anchors', 'install cord management system'",
                 "Prefer minimal renter-friendly fixes: rearrange, move higher, add small mats/bins/covers; avoid drilling or big furniture.",
                 "Do not invent brand names, prices, or claims.",
             ],
@@ -192,8 +196,23 @@ class PetVulnerabilityAnalyzer:
                 print(f"  Item keys: {list(item.keys())}")
                 print(f"  Item: {item}")
                 
-                # Bbox is optional - set to None since we're not asking for it
-                bbox = None
+                # Handle fixes - API might return "fixes", "fixes_free"/"fixes_paid", or "quick_fixes_free"/"quick_fixes_paid"
+                fixes_free = []
+                fixes_paid = []
+                
+                # Try different possible field names
+                if "fixes" in item:
+                    # If there's a single "fixes" field, treat all as free fixes
+                    fixes_free = item.get("fixes", [])
+                elif "fixes_free" in item or "fixes_paid" in item:
+                    fixes_free = item.get("fixes_free", [])
+                    fixes_paid = item.get("fixes_paid", [])
+                elif "quick_fixes_free" in item or "quick_fixes_paid" in item:
+                    fixes_free = item.get("quick_fixes_free", [])
+                    fixes_paid = item.get("quick_fixes_paid", [])
+                else:
+                    # No fixes found, use empty lists
+                    print(f"  Warning: No fixes field found in item. Available keys: {list(item.keys())}")
 
                 # Use .get() with defaults to handle missing fields gracefully
                 try:
@@ -202,10 +221,9 @@ class PetVulnerabilityAnalyzer:
                             label=item.get("label", "Unknown"),
                             risk_type=risk_type,  # type: ignore - Set from the key, guaranteed to be valid RiskType
                             severity=item.get("severity", "low"),
-                            bbox=bbox,
                             reasons=item.get("reasons", []),
-                            quick_fixes_free=item.get("quick_fixes_free", []),
-                            quick_fixes_paid=item.get("quick_fixes_paid", []),
+                            quick_fixes_free=fixes_free if isinstance(fixes_free, list) else [],
+                            quick_fixes_paid=fixes_paid if isinstance(fixes_paid, list) else [],
                         )
                     )
                 except Exception as e:
