@@ -112,6 +112,47 @@ CATEGORY_COLORS = {
 }
 
 
+def scale_bboxes_to_original_size(
+    detections: List[Any],
+    original_h: int,
+    original_w: int,
+    resized_h: int,
+    resized_w: int,
+) -> List[Any]:
+    """
+    Scale bounding box coordinates from resized image back to original image size.
+    
+    Args:
+        detections: List of DetectedObject with bbox coordinates in resized image space
+        original_h: Original image height
+        original_w: Original image width
+        resized_h: Resized image height (used for detection)
+        resized_w: Resized image width (used for detection)
+        
+    Returns:
+        List of DetectedObject with bbox coordinates scaled to original image size
+    """
+    from dataclasses import replace
+    
+    scale_x = original_w / resized_w
+    scale_y = original_h / resized_h
+    
+    scaled_detections = []
+    for det in detections:
+        x1, y1, x2, y2 = det.bbox
+        scaled_bbox = (
+            int(x1 * scale_x),
+            int(y1 * scale_y),
+            int(x2 * scale_x),
+            int(y2 * scale_y),
+        )
+        # Create a new DetectedObject with scaled bbox using dataclasses.replace
+        scaled_det = replace(det, bbox=scaled_bbox)
+        scaled_detections.append(scaled_det)
+    
+    return scaled_detections
+
+
 def draw_detections_on_image(
     img_rgb: np.ndarray,
     detections: List[Any],
@@ -1151,8 +1192,23 @@ if input_image:
             if detections:
                 st.write("#### Detected Objects")
                 
+                # Scale bounding boxes from resized detection image back to original image size
+                # Detection happens on images resized to max 960px, but we draw on original size
+                original_h, original_w = img_rgb.shape[:2]
+                target_size = 960
+                scale = target_size / max(original_h, original_w)
+                if scale < 1.0:
+                    resized_h = int(original_h * scale)
+                    resized_w = int(original_w * scale)
+                    scaled_detections = scale_bboxes_to_original_size(
+                        detections, original_h, original_w, resized_h, resized_w
+                    )
+                else:
+                    # Image wasn't resized, use detections as-is
+                    scaled_detections = detections
+                
                 # Draw bounding boxes on original image
-                annotated_img = draw_detections_on_image(img_rgb, detections, category_names)
+                annotated_img = draw_detections_on_image(img_rgb, scaled_detections, category_names)
                 st.image(annotated_img, width="stretch")
                 
                 # Legend for categories based on pet type
