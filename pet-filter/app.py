@@ -29,6 +29,7 @@ from ultralytics import YOLO
 from typing import Tuple, Dict, Any, Optional, List
 import tempfile
 import os
+import urllib.parse
 
 # 1. Load the AI Depth Model (Cached for speed)
 @st.cache_resource
@@ -1378,6 +1379,58 @@ if input_image:
         except Exception as e:
             st.error(f"Error analyzing {current_mode.lower()} attractiveness: {e}")
 
+    # Helper function to create Amazon search URL from fix text
+    def create_amazon_search_url(query: str, amazon_tag: Optional[str] = None) -> str:
+        """Create an Amazon search URL from a query string."""
+        q = urllib.parse.quote_plus(query)
+        url = f"https://www.amazon.com/s?k={q}"
+        if amazon_tag:
+            url += f"&tag={urllib.parse.quote_plus(amazon_tag)}"
+        return url
+    
+    def extract_amazon_query_from_fix(fix_text: str, risk_type: str) -> str:
+        """Extract or generate an Amazon search query from a fix description."""
+        fix_lower = fix_text.lower()
+        
+        # Try to extract product keywords from common patterns
+        # Look for phrases like "buy X", "purchase Y", "get Z", "install W"
+        import re
+        
+        # Common patterns
+        patterns = [
+            r"(?:buy|purchase|get|install|add|use)\s+([^,\.]+?)(?:,|\.|$)",
+            r"([a-z]+(?:\s+[a-z]+){0,3})\s+(?:cover|mat|pad|protector|guard|organizer|anchor)",
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, fix_lower)
+            if match:
+                product = match.group(1).strip()
+                # Clean up common words
+                product = re.sub(r'\b(a|an|the|some|any)\b', '', product).strip()
+                if len(product) > 3:
+                    return f"{product} pet safety"
+        
+        # Fallback: use risk-type specific keywords
+        risk_keywords = {
+            "breakable": "pet proof breakable items",
+            "scratchable": "cat scratch protector",
+            "chewable": "pet chew deterrent",
+            "toxic": "pet safe alternative",
+            "unstable": "furniture anchor pet safety",
+        }
+        
+        # Extract key nouns from fix text (simple heuristic)
+        words = fix_text.lower().split()
+        # Remove common stop words
+        stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "as", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "should", "could", "may", "might", "must", "can", "this", "that", "these", "those"}
+        keywords = [w for w in words if w not in stop_words and len(w) > 3][:3]
+        
+        if keywords:
+            return " ".join(keywords) + " pet"
+        
+        return risk_keywords.get(risk_type, "pet safety product")
+    
     # ROW 5: Room Vulnerability Analysis
     st.write("---")
     st.write("### 5. ⚠️ Room Vulnerability and Improvement")
@@ -1481,91 +1534,19 @@ if input_image:
                                                         for fix in vuln_obj.quick_fixes_free:
                                                             st.markdown(f"- {fix}")
                                                     
-                                                    # Paid fixes
+                                                    # Paid fixes with Amazon links
                                                     if vuln_obj.quick_fixes_paid:
                                                         st.markdown("**💵 Paid Solutions:**")
                                                         for fix in vuln_obj.quick_fixes_paid:
                                                             st.markdown(f"- {fix}")
+                                                            # Generate Amazon search link
+                                                            query = extract_amazon_query_from_fix(fix, vuln_obj.risk_type)
+                                                            amazon_url = create_amazon_search_url(query)
+                                                            st.link_button(f"🔗 Shop on Amazon: {query}", amazon_url)
                                 else:
                                     st.info(f"No {risk_type} vulnerabilities detected.")
                     else:
                         st.info("No vulnerabilities found in any category.")
-                    
-                    # Room Improvement Suggestions subsection
-                    st.write("---")
-                    st.write("#### 💡 Room Improvement Suggestions")
-                    st.caption(f"Tenant-friendly solutions to address the identified vulnerabilities and make this space safer for {current_mode.lower()}s.")
-                    
-                    # Aggregate all free and paid fixes from all vulnerabilities
-                    all_free_fixes: List[Tuple[str, str, str]] = []  # (risk_type, label, fix)
-                    all_paid_fixes: List[Tuple[str, str, str]] = []  # (risk_type, label, fix)
-                    
-                    for risk_type, objects in vulnerable_objects.items():
-                        for vuln_obj in objects:
-                            # Add free fixes
-                            for fix in vuln_obj.quick_fixes_free:
-                                all_free_fixes.append((risk_type, vuln_obj.label, fix))
-                            # Add paid fixes
-                            for fix in vuln_obj.quick_fixes_paid:
-                                all_paid_fixes.append((risk_type, vuln_obj.label, fix))
-                    
-                    # Display suggestions in tabs
-                    if all_free_fixes or all_paid_fixes:
-                        tab_free, tab_paid = st.tabs(["🆓 Free", "💵 Paid"])
-                        
-                        with tab_free:
-                            if all_free_fixes:
-                                # Group fixes by risk type
-                                fixes_by_risk: Dict[str, List[Tuple[str, str]]] = {}
-                                for risk_type, label, fix in all_free_fixes:
-                                    if risk_type not in fixes_by_risk:
-                                        fixes_by_risk[risk_type] = []
-                                    fixes_by_risk[risk_type].append((label, fix))
-                                
-                                risk_emoji_map = {
-                                    "breakable": "💥",
-                                    "scratchable": "🐾",
-                                    "chewable": "🦷",
-                                    "toxic": "☠️",
-                                    "unstable": "⚖️",
-                                }
-                                
-                                for risk_type, fixes in fixes_by_risk.items():
-                                    risk_emoji = risk_emoji_map.get(risk_type, "⚠️")
-                                    st.markdown(f"##### {risk_emoji} {risk_type.title()}")
-                                    for label, fix in fixes:
-                                        with st.expander(f"**{label}**", expanded=False):
-                                            st.markdown(fix)
-                            else:
-                                st.info("No free solutions available.")
-                        
-                        with tab_paid:
-                            if all_paid_fixes:
-                                # Group fixes by risk type
-                                fixes_by_risk: Dict[str, List[Tuple[str, str]]] = {}
-                                for risk_type, label, fix in all_paid_fixes:
-                                    if risk_type not in fixes_by_risk:
-                                        fixes_by_risk[risk_type] = []
-                                    fixes_by_risk[risk_type].append((label, fix))
-                                
-                                risk_emoji_map = {
-                                    "breakable": "💥",
-                                    "scratchable": "🐾",
-                                    "chewable": "🦷",
-                                    "toxic": "☠️",
-                                    "unstable": "⚖️",
-                                }
-                                
-                                for risk_type, fixes in fixes_by_risk.items():
-                                    risk_emoji = risk_emoji_map.get(risk_type, "⚠️")
-                                    st.markdown(f"##### {risk_emoji} {risk_type.title()}")
-                                    for label, fix in fixes:
-                                        with st.expander(f"**{label}**", expanded=False):
-                                            st.markdown(fix)
-                            else:
-                                st.info("No paid solutions needed.")
-                    else:
-                        st.info("No improvement suggestions available.")
                 else:
                     st.success(f"✅ No significant vulnerabilities detected! This space appears safe for {current_mode.lower()}s.")
                     
